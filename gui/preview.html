@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>AI Engineering Platform</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+html,body{width:100%;height:100%;background:#050505;overflow:hidden;}
+#root{width:100vw;height:100vh;display:flex;flex-direction:column;font-family:'IBM Plex Mono',monospace;color:#c8c8d0;background:#050505;}
+
+::-webkit-scrollbar{width:4px;}
+::-webkit-scrollbar-track{background:transparent;}
+::-webkit-scrollbar-thumb{background:#222;border-radius:4px;}
+
+@keyframes fadeIn{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}
+@keyframes blink{0%,80%,100%{opacity:.2;transform:scale(.8);}40%{opacity:1;transform:scale(1.2);}}
+@keyframes workspin{0%,100%{opacity:1;}50%{opacity:.3;}}
+
+.msg-wrap{animation:fadeIn .3s ease-out;}
+.act-entry{animation:fadeIn .25s ease-out;}
+
+#header{padding:10px 20px;border-bottom:1px solid #111;display:flex;align-items:center;justify-content:space-between;background:#080808;flex-shrink:0;}
+#body{flex:1;display:grid;grid-template-columns:210px 1fr 270px;overflow:hidden;min-height:0;}
+
+#agent-panel{border-right:1px solid #111;background:#060606;display:flex;flex-direction:column;overflow:hidden;}
+#chat-panel{display:flex;flex-direction:column;overflow:hidden;min-height:0;}
+#activity-panel{border-left:1px solid #111;background:#060606;display:flex;flex-direction:column;overflow:hidden;}
+
+.panel-hdr{padding:12px 12px 8px;border-bottom:1px solid #0f0f0f;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;}
+.panel-lbl{font-size:9px;color:#444;font-weight:700;letter-spacing:.12em;}
+
+#agent-list{flex:1;overflow-y:auto;padding:8px;}
+.agent-btn{width:100%;padding:9px;border-radius:7px;cursor:pointer;transition:all .15s;margin-bottom:4px;text-align:left;display:flex;align-items:center;gap:8px;border:1px solid #1a1a1a;background:#0d0d0d;}
+.agent-btn:hover{filter:brightness(1.3);}
+.avatar{border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+
+#direct-bar{padding:8px 14px;display:flex;align-items:center;gap:8px;flex-shrink:0;}
+#chat-messages{flex:1;overflow-y:auto;padding:20px 22px;display:flex;flex-direction:column;gap:16px;min-height:0;}
+#input-area{padding:12px 20px 14px;border-top:1px solid #111;background:#080808;flex-shrink:0;}
+#input-row{display:flex;gap:8px;align-items:flex-end;}
+#chat-input{flex:1;background:#0d0d0d;border:1px solid #1a1a1a;border-radius:9px;padding:10px 14px;color:#c8c8d0;font-size:13px;resize:none;font-family:inherit;line-height:1.5;transition:border-color .2s;}
+#chat-input:focus{outline:none;border-color:#6366f144;}
+#chat-input::placeholder{color:#2a2a2a;}
+#send-btn{width:42px;height:42px;border-radius:9px;background:#6366f1;border:none;color:#fff;font-size:18px;cursor:pointer;font-weight:700;flex-shrink:0;display:flex;align-items:center;justify-content:center;}
+#send-btn:disabled{opacity:.35;cursor:not-allowed;}
+#activity-list{flex:1;overflow-y:auto;padding:8px;}
+</style>
+</head>
+<body>
+<div id="root">
+  <div id="header">
+    <div style="display:flex;align-items:center;gap:12px;">
+      <div style="width:36px;height:36px;border-radius:9px;background:linear-gradient(135deg,#1e1b4b,#0c1a3a);border:1px solid #6366f133;display:flex;align-items:center;justify-content:center;font-size:18px;">🤖</div>
+      <div>
+        <div style="font-size:14px;font-weight:700;letter-spacing:.05em;color:#e8e8f0;">AI Engineering Platform</div>
+        <div style="font-size:9px;color:#444;letter-spacing:.1em;text-transform:uppercase;">Multi-Agent Autonomous System · v1.0 · Mock Mode</div>
+      </div>
+    </div>
+    <div id="hdr-badges" style="display:flex;gap:10px;"></div>
+  </div>
+
+  <div id="body">
+    <div id="agent-panel">
+      <div class="panel-hdr">
+        <span class="panel-lbl">AGENT TEAM</span>
+        <span style="font-size:9px;color:#333;">6 ONLINE</span>
+      </div>
+      <div id="agent-list"></div>
+    </div>
+
+    <div id="chat-panel">
+      <div id="direct-bar" style="display:none;"></div>
+      <div id="chat-messages"></div>
+      <div id="input-area">
+        <div id="input-row">
+          <textarea id="chat-input" rows="2"
+            placeholder="Instruct the team… try: 'train a churn model' · 'security audit' · 'build a dashboard' · 'run EDA'"></textarea>
+          <button id="send-btn">↑</button>
+        </div>
+        <div style="font-size:9px;color:#222;margin-top:5px;letter-spacing:.06em;">ENTER to send · SHIFT+ENTER for newline</div>
+      </div>
+    </div>
+
+    <div id="activity-panel">
+      <div class="panel-hdr">
+        <span class="panel-lbl">ACTIVITY FEED</span>
+        <span style="font-size:9px;color:#4ade80;background:#0a2a0a;border:1px solid #1a4a1a;padding:2px 6px;border-radius:4px;">LIVE</span>
+      </div>
+      <div id="activity-list">
+        <div id="act-empty" style="color:#222;font-size:11px;text-align:center;margin-top:24px;">Awaiting agent activity…</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ─── AGENT DEFINITIONS ───────────────────────────────────────────────────────
+var AGENTS = {
+  orchestrator:    {id:"orchestrator",    name:"Orchestrator",     short:"ORCH",   icon:"🧠", color:"#6366f1", bg:"#1e1b4b"},
+  ml_engineer:     {id:"ml_engineer",     name:"ML Engineer",      short:"ML",     icon:"🤖", color:"#10b981", bg:"#022c22"},
+  data_scientist:  {id:"data_scientist",  name:"Data Scientist",   short:"DS",     icon:"📊", color:"#3b82f6", bg:"#0c1a3a"},
+  data_analyst:    {id:"data_analyst",    name:"Data Analyst",     short:"DA",     icon:"📈", color:"#f59e0b", bg:"#1c1000"},
+  frontend:        {id:"frontend",        name:"Frontend Agent",   short:"FE",     icon:"💻", color:"#ec4899", bg:"#2d0a1a"},
+  sast:            {id:"sast",            name:"SAST Agent",       short:"SAST",   icon:"🔒", color:"#ef4444", bg:"#2d0a0a"},
+  runtime_security:{id:"runtime_security",name:"Runtime Security", short:"RT-SEC", icon:"🛡", color:"#8b5cf6", bg:"#1a0a2d"}
+};
+
+var status = {};
+for (var k in AGENTS) status[k] = "idle";
+
+// ─── SCENARIOS ───────────────────────────────────────────────────────────────
+var SCENARIOS = {
+  model: {
+    keys: ["model","train","churn","ml","predict","classif","accuracy","logistic","random forest"],
+    flow: [
+      {f:"orchestrator",   t:"user",            d:700,   msg:"Got it. Spinning up ML Engineer and Data Scientist to handle this end-to-end."},
+      {f:"orchestrator",   t:"ml_engineer",     d:1300,  p2p:true, msg:"Build an ML pipeline for the user's request. Start with data ingestion and model selection."},
+      {f:"ml_engineer",    t:"orchestrator",    d:2300,  p2p:true, msg:"On it. Dataset loaded: ~12k rows, 18 features. Selecting RandomForest as baseline."},
+      {f:"ml_engineer",    t:"data_scientist",  d:3100,  p2p:true, msg:"Starting training. Can you run EDA and flag anything suspicious before I finalize the pipeline?"},
+      {f:"data_scientist", t:"ml_engineer",     d:4500,  p2p:true, msg:"EDA done. Found 3 features with >40% nulls — last_login, promo_clicks, referral_code. Heavy skew in account_age. Recommend imputation + log transform."},
+      {f:"ml_engineer",    t:"sast",            d:5900,  p2p:true, msg:"Training complete. Accuracy: 94.1%. Writing deploy script — sending for security scan before push."},
+      {f:"sast",           t:"ml_engineer",     d:7200,  p2p:true, msg:"Scan complete. Found 1 HIGH: hardcoded DB connection string on line 47. Replace with os.getenv('DB_CONN_STR'). Everything else clean."},
+      {f:"ml_engineer",    t:"sast",            d:8100,  p2p:true, msg:"Fixed. Using os.getenv('DB_CONN_STR') now. Re-sending for approval."},
+      {f:"sast",           t:"ml_engineer",     d:9000,  p2p:true, msg:"Re-scan passed. No vulnerabilities found. ✅ Approved for deployment."},
+      {f:"ml_engineer",    t:"orchestrator",    d:9800,  p2p:true, msg:"Committed to GitHub. CI run started. Monitoring..."},
+      {f:"data_analyst",   t:"orchestrator",    d:10600, p2p:true, msg:"Logged pipeline creation to monitoring report. Timestamped entry added to Excel."},
+      {f:"orchestrator",   t:"user",            d:11500, msg:"✅ Done. Model trained (94.1% accuracy), security-scanned, and deployed to GitHub. CI passed. Health check scheduled for 9PM."}
+    ]
+  },
+  security: {
+    keys: ["security","scan","audit","vuln","pentest","owasp"],
+    flow: [
+      {f:"orchestrator",      t:"user",             d:700,  msg:"Initiating full security audit. Routing to SAST for static analysis + Runtime Security for live testing."},
+      {f:"orchestrator",      t:"sast",             d:1200, p2p:true, msg:"Full codebase security audit requested. Scan all agent files and report all findings."},
+      {f:"orchestrator",      t:"runtime_security", d:1400, p2p:true, msg:"Run dynamic pen test on all running services. Full OWASP ZAP sweep."},
+      {f:"sast",              t:"orchestrator",     d:3600, p2p:true, msg:"Static scan complete. Found: 2 HIGH (SQL injection in api/routes.py:112, insecure deserialization in ml_tools.py:89), 4 MEDIUM, 1 LOW. Staging patches."},
+      {f:"runtime_security",  t:"orchestrator",     d:4900, p2p:true, msg:"Dynamic scan complete. No open ports externally. Auth tokens scoped correctly. Finding: /api/debug endpoint still accessible — should be disabled in prod."},
+      {f:"sast",              t:"runtime_security", d:5800, p2p:true, msg:"Sharing static findings for cross-reference. Deserialization issue in ml_tools may be exploitable at runtime — can you specifically test that surface?"},
+      {f:"runtime_security",  t:"sast",             d:7100, p2p:true, msg:"Confirmed — deserialization endpoint is exploitable with a crafted payload. Marking CRITICAL. Recommend immediate patch before next deploy."},
+      {f:"orchestrator",      t:"user",             d:8400, msg:"🔴 Audit complete. Critical: 1 (exploitable deserialization). High: 2. Medium: 4. Low: 1. Patches staged in branch security/audit-fixes. Ready to merge on your go-ahead."}
+    ]
+  },
+  dashboard: {
+    keys: ["dashboard","ui","frontend","interface","chart","visualiz","build"],
+    flow: [
+      {f:"orchestrator",  t:"user",         d:700,  msg:"Dashboard request received. Routing Frontend Agent and Data Analyst to collaborate."},
+      {f:"orchestrator",  t:"frontend",     d:1200, p2p:true, msg:"Build a model performance dashboard. Coordinate with Data Analyst on which metrics to surface."},
+      {f:"frontend",      t:"data_analyst", d:2100, p2p:true, msg:"What key metrics should I show? Thinking accuracy trend, drift score, pipeline health — does that cover everything?"},
+      {f:"data_analyst",  t:"frontend",     d:3300, p2p:true, msg:"Yes, plus prediction latency (p50/p95) and daily inference volume. I'll expose those from the Excel monitoring file via a local API."},
+      {f:"frontend",      t:"sast",         d:4700, p2p:true, msg:"Dashboard component drafted. Sending for XSS review before wiring up live data endpoints."},
+      {f:"sast",          t:"frontend",     d:6000, p2p:true, msg:"Reviewed. One issue: innerHTML used in tooltip renderer — XSS risk. Swap to textContent or use DOMPurify. Everything else clean."},
+      {f:"frontend",      t:"sast",         d:6900, p2p:true, msg:"Fixed. Using DOMPurify for all user-facing strings now. Re-sending for approval."},
+      {f:"sast",          t:"frontend",     d:7700, p2p:true, msg:"Re-scan passed. ✅ No XSS vectors found. Approved."},
+      {f:"frontend",      t:"orchestrator", d:8500, p2p:true, msg:"Dashboard built and security-cleared. Lighthouse: 97 performance / 100 accessibility. Deploying."},
+      {f:"orchestrator",  t:"user",         d:9400, msg:"✅ Dashboard live. Shows accuracy trend, drift score, latency (p50/p95), daily inference volume. Lighthouse 97/100. Security cleared."}
+    ]
+  },
+  eda: {
+    keys: ["eda","data","analysis","dataset","feature","explore","statistic"],
+    flow: [
+      {f:"orchestrator",   t:"user",           d:700,  msg:"Data analysis task detected. Assigning Data Scientist with support from Data Analyst."},
+      {f:"orchestrator",   t:"data_scientist", d:1200, p2p:true, msg:"Run full EDA on the dataset. Report patterns, anomalies, and feature recommendations."},
+      {f:"data_scientist", t:"orchestrator",   d:2900, p2p:true, msg:"EDA in progress. Shape: 45k x 24 cols. 6 features with high null rates. Strong multicollinearity between age and tenure. Running correlation matrix."},
+      {f:"data_scientist", t:"data_analyst",   d:4000, p2p:true, msg:"Can you pull historical trend data for these features? Need to check if the null rates are recent or chronic."},
+      {f:"data_analyst",   t:"data_scientist", d:5200, p2p:true, msg:"Checked Excel logs — null rate on promo_clicks spiked 3 weeks ago from 2% to 41%. Tracking pixel broke. Flagging as a data quality incident."},
+      {f:"data_scientist", t:"ml_engineer",    d:6400, p2p:true, msg:"EDA complete. Recommendations: drop promo_clicks (broken source), log-transform account_age, one-hot encode region. Full report ready."},
+      {f:"orchestrator",   t:"user",           d:7700, msg:"📊 EDA complete. Key findings: data quality incident on promo_clicks (41% nulls since pixel broke 3 weeks ago), multicollinearity between age/tenure, skewed account_age. Feature recommendations ready for the ML pipeline."}
+    ]
+  },
+  default: {
+    keys: [],
+    flow: [
+      {f:"orchestrator", t:"user",         d:700,  msg:"Understood. Analyzing what's needed and assigning the right agents."},
+      {f:"orchestrator", t:"ml_engineer",  d:1500, p2p:true, msg:"Stand by — assessing which agents this task requires."},
+      {f:"ml_engineer",  t:"orchestrator", d:2400, p2p:true, msg:"Ready. Sandbox warmed up, all tools available."},
+      {f:"orchestrator", t:"user",         d:3500, msg:"Team is standing by. No specialized pipeline needed for this one. What would you like to tackle next?"}
+    ]
+  }
+};
+
+function detectScenario(msg) {
+  var m = msg.toLowerCase();
+  for (var k in SCENARIOS) {
+    if (k === "default") continue;
+    var keys = SCENARIOS[k].keys;
+    for (var i = 0; i < keys.length; i++) {
+      if (m.indexOf(keys[i]) !== -1) return SCENARIOS[k];
+    }
+  }
+  return SCENARIOS.default;
+}
+
+// ─── DOM HELPERS ─────────────────────────────────────────────────────────────
+function fmt(ts) {
+  return new Date(ts).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit",second:"2-digit"});
+}
+
+function makeAvatar(agentId, size) {
+  size = size || 30;
+  var el = document.createElement("div");
+  el.className = "avatar";
+  el.style.width = size + "px";
+  el.style.height = size + "px";
+  el.style.fontSize = Math.floor(size * 0.44) + "px";
+  var a = AGENTS[agentId];
+  if (a) {
+    el.style.background = a.bg;
+    el.style.border = "2px solid " + a.color;
+    el.textContent = a.icon;
+  } else {
+    el.style.background = "#1a1a2e";
+    el.style.border = "2px solid #6366f1";
+    el.textContent = "👤";
+  }
+  return el;
+}
+
+function setAgentStatus(agentId, s) {
+  status[agentId] = s;
+  var card = document.querySelector("[data-agent='" + agentId + "']");
+  if (!card) return;
+  var dot = card.querySelector(".sdot");
+  var lbl = card.querySelector(".slbl");
+  var cols = {idle:"#4ade80", working:"#facc15", error:"#f87171"};
+  var lbls = {idle:"Idle", working:"Working", error:"Error"};
+  var c = cols[s] || cols.idle;
+  if (dot) { dot.style.background = c; dot.style.boxShadow = "0 0 5px " + c; dot.style.animation = s === "working" ? "workspin 1s ease-in-out infinite" : "none"; }
+  if (lbl) { lbl.textContent = lbls[s] || "Idle"; lbl.style.color = c; }
+}
+
+// ─── BUILD AGENT LIST ─────────────────────────────────────────────────────────
+var activeAgent = null;
+
+function buildAgentList() {
+  var list = document.getElementById("agent-list");
+  list.innerHTML = "";
+  for (var id in AGENTS) {
+    (function(a) {
+      var btn = document.createElement("button");
+      btn.className = "agent-btn";
+      btn.dataset.agent = a.id;
+      if (activeAgent === a.id) {
+        btn.style.background = a.bg + "cc";
+        btn.style.borderColor = a.color;
+      }
+
+      var av = makeAvatar(a.id, 32);
+
+      var info = document.createElement("div");
+      info.style.cssText = "flex:1;text-align:left;";
+
+      var nm = document.createElement("div");
+      nm.style.cssText = "font-size:11px;font-weight:700;color:" + a.color + ";";
+      nm.textContent = a.name;
+
+      var srow = document.createElement("div");
+      srow.style.cssText = "display:flex;align-items:center;gap:5px;margin-top:2px;";
+
+      var dot = document.createElement("span");
+      dot.className = "sdot";
+      dot.style.cssText = "display:inline-block;width:7px;height:7px;border-radius:50%;background:#4ade80;box-shadow:0 0 5px #4ade80;";
+
+      var lbl = document.createElement("span");
+      lbl.className = "slbl";
+      lbl.style.cssText = "font-size:10px;color:#4ade80;";
+      lbl.textContent = "Idle";
+
+      srow.appendChild(dot);
+      srow.appendChild(lbl);
+      info.appendChild(nm);
+      info.appendChild(srow);
+      btn.appendChild(av);
+      btn.appendChild(info);
+      list.appendChild(btn);
+
+      btn.addEventListener("click", function() {
+        activeAgent = (activeAgent === a.id) ? null : a.id;
+        buildAgentList();
+        buildDirectBar();
+      });
+    })(AGENTS[id]);
+  }
+}
+
+function buildDirectBar() {
+  var bar = document.getElementById("direct-bar");
+  bar.innerHTML = "";
+  if (!activeAgent) { bar.style.display = "none"; return; }
+  var a = AGENTS[activeAgent];
+  bar.style.display = "flex";
+  bar.style.background = a.bg + "aa";
+  bar.style.borderBottom = "1px solid " + a.color + "33";
+
+  var av = makeAvatar(activeAgent, 20);
+  var nm = document.createElement("span");
+  nm.style.cssText = "font-size:11px;color:" + a.color + ";font-weight:700;";
+  nm.textContent = "DIRECT CHAT: " + a.name;
+
+  var close = document.createElement("button");
+  close.style.cssText = "margin-left:auto;background:none;border:none;color:#555;cursor:pointer;font-size:12px;font-family:inherit;";
+  close.textContent = "✕ Back to team";
+  close.addEventListener("click", function() { activeAgent = null; buildAgentList(); buildDirectBar(); });
+
+  bar.appendChild(av);
+  bar.appendChild(nm);
+  bar.appendChild(close);
+}
+
+function buildHeaderBadges() {
+  var el = document.getElementById("hdr-badges");
+  ["Phase 1 Active","6 Agents","Mock Mode"].forEach(function(t) {
+    var b = document.createElement("div");
+    b.style.cssText = "display:flex;align-items:center;gap:5px;font-size:10px;color:#4ade80;background:#0a2a0a;border:1px solid #1a4a1a;padding:3px 8px;border-radius:20px;";
+    b.innerHTML = '<span style="display:inline-block;width:5px;height:5px;border-radius:50%;background:#4ade80;"></span>' + t;
+    el.appendChild(b);
+  });
+}
+
+// ─── CHAT MESSAGES ───────────────────────────────────────────────────────────
+function addChatMsg(fromId, content) {
+  var isUser = (fromId === "user");
+  var a = AGENTS[fromId];
+  var chat = document.getElementById("chat-messages");
+
+  var ti = document.getElementById("typing-ind");
+  if (ti) ti.remove();
+
+  var wrap = document.createElement("div");
+  wrap.className = "msg-wrap";
+  wrap.style.cssText = "display:flex;flex-direction:" + (isUser ? "row-reverse" : "row") + ";gap:10px;align-items:flex-start;";
+
+  var av = makeAvatar(fromId, 30);
+
+  var inner = document.createElement("div");
+  inner.style.cssText = "max-width:72%;display:flex;flex-direction:column;gap:4px;";
+
+  var meta = document.createElement("div");
+  meta.style.cssText = "display:flex;align-items:center;gap:6px;flex-direction:" + (isUser ? "row-reverse" : "row") + ";";
+
+  var nm = document.createElement("span");
+  nm.style.cssText = "font-size:11px;font-weight:700;color:" + (isUser ? "#6366f1" : (a ? a.color : "#888")) + ";text-transform:uppercase;";
+  nm.textContent = isUser ? "YOU" : (a ? a.name : fromId);
+
+  var ts = document.createElement("span");
+  ts.style.cssText = "font-size:10px;color:#333;";
+  ts.textContent = fmt(Date.now());
+
+  meta.appendChild(nm);
+  meta.appendChild(ts);
+
+  var bubble = document.createElement("div");
+  bubble.style.cssText = "padding:10px 14px;border-radius:" + (isUser ? "14px 4px 14px 14px" : "4px 14px 14px 14px") + ";background:" + (isUser ? "#1e1b4b" : "#0f0f0f") + ";border:1px solid " + (isUser ? "#6366f133" : "#1a1a1a") + ";color:#c8c8d0;font-size:13.5px;line-height:1.6;white-space:pre-wrap;word-break:break-word;";
+  bubble.textContent = content;
+
+  inner.appendChild(meta);
+  inner.appendChild(bubble);
+  wrap.appendChild(av);
+  wrap.appendChild(inner);
+  chat.appendChild(wrap);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function showTyping(agentId) {
+  removeTyping();
+  var a = AGENTS[agentId];
+  if (!a) return;
+  var chat = document.getElementById("chat-messages");
+
+  var wrap = document.createElement("div");
+  wrap.id = "typing-ind";
+  wrap.style.cssText = "display:flex;gap:10px;align-items:center;opacity:.7;animation:fadeIn .2s ease-out;";
+
+  var av = makeAvatar(agentId, 30);
+
+  var bubble = document.createElement("div");
+  bubble.style.cssText = "padding:10px 16px;border-radius:4px 14px 14px 14px;background:#0f0f0f;border:1px solid #1a1a1a;display:flex;gap:4px;align-items:center;";
+
+  var nm = document.createElement("span");
+  nm.style.cssText = "font-size:11px;color:" + a.color + ";margin-right:6px;";
+  nm.textContent = a.name;
+  bubble.appendChild(nm);
+
+  for (var i = 0; i < 3; i++) {
+    var d = document.createElement("span");
+    d.style.cssText = "display:inline-block;width:6px;height:6px;border-radius:50%;background:" + a.color + ";animation:blink 1.2s ease-in-out " + (i * 0.2) + "s infinite;";
+    bubble.appendChild(d);
+  }
+
+  wrap.appendChild(av);
+  wrap.appendChild(bubble);
+  chat.appendChild(wrap);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function removeTyping() {
+  var ti = document.getElementById("typing-ind");
+  if (ti) ti.remove();
+}
+
+// ─── ACTIVITY FEED ───────────────────────────────────────────────────────────
+function addActivity(fromId, toId, content) {
+  var fa = AGENTS[fromId];
+  var ta = AGENTS[toId];
+  if (!fa || !ta) return;
+
+  var empty = document.getElementById("act-empty");
+  if (empty) empty.remove();
+
+  var list = document.getElementById("activity-list");
+
+  var el = document.createElement("div");
+  el.className = "act-entry";
+  el.style.cssText = "padding:8px 9px;border-radius:6px;background:#080808;border:1px solid " + fa.color + "22;margin-bottom:5px;";
+
+  var hdr = document.createElement("div");
+  hdr.style.cssText = "display:flex;align-items:center;gap:5px;margin-bottom:4px;";
+  hdr.innerHTML = '<span style="font-size:12px;">' + fa.icon + '</span>' +
+    '<span style="font-size:9px;color:' + fa.color + ';font-weight:700;">' + fa.short + '</span>' +
+    '<span style="font-size:9px;color:#2a2a2a;">→</span>' +
+    '<span style="font-size:12px;">' + ta.icon + '</span>' +
+    '<span style="font-size:9px;color:' + ta.color + ';font-weight:700;">' + ta.short + '</span>';
+
+  var ts = document.createElement("span");
+  ts.style.cssText = "font-size:8px;color:#2a2a2a;margin-left:auto;";
+  ts.textContent = fmt(Date.now());
+  hdr.appendChild(ts);
+
+  var txt = document.createElement("div");
+  txt.style.cssText = "font-size:11px;color:#555;line-height:1.5;";
+  txt.textContent = content.length > 88 ? content.slice(0, 88) + "…" : content;
+
+  el.appendChild(hdr);
+  el.appendChild(txt);
+  list.appendChild(el);
+  list.scrollTop = list.scrollHeight;
+}
+
+// ─── RUN SCENARIO ─────────────────────────────────────────────────────────────
+var timers = [];
+var isBusy = false;
+
+function runScenario(scenario) {
+  timers.forEach(function(t) { clearTimeout(t); });
+  timers = [];
+  isBusy = true;
+  document.getElementById("send-btn").disabled = true;
+
+  var inv = {};
+  scenario.flow.forEach(function(s) {
+    if (s.f !== "user") inv[s.f] = true;
+    if (s.t !== "user") inv[s.t] = true;
+  });
+  for (var id in inv) setAgentStatus(id, "working");
+
+  var last = scenario.flow.length - 1;
+  scenario.flow.forEach(function(step, idx) {
+    var t1 = setTimeout(function() {
+      if (step.f !== "user") showTyping(step.f);
+    }, step.d - 400);
+
+    var t2 = setTimeout(function() {
+      removeTyping();
+      if (!step.p2p && step.t === "user") {
+        addChatMsg(step.f, step.msg);
+      } else if (step.p2p) {
+        addActivity(step.f, step.t, step.msg);
+      }
+      if (idx === last) {
+        for (var id in inv) setAgentStatus(id, "idle");
+        isBusy = false;
+        document.getElementById("send-btn").disabled = false;
+        document.getElementById("chat-input").placeholder =
+          "Instruct the team… try: 'train a churn model' · 'security audit' · 'build a dashboard' · 'run EDA'";
+      }
+    }, step.d);
+
+    timers.push(t1, t2);
+  });
+}
+
+// ─── SEND ─────────────────────────────────────────────────────────────────────
+function handleSend() {
+  var inp = document.getElementById("chat-input");
+  var text = inp.value.trim();
+  if (!text || isBusy) return;
+  inp.value = "";
+  inp.placeholder = "Agents working… please wait…";
+  addChatMsg("user", text);
+  var sc = detectScenario(text);
+  var t = setTimeout(function() { runScenario(sc); }, 400);
+  timers.push(t);
+}
+
+document.getElementById("send-btn").addEventListener("click", handleSend);
+document.getElementById("chat-input").addEventListener("keydown", function(e) {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
+});
+
+// ─── INIT ─────────────────────────────────────────────────────────────────────
+buildHeaderBadges();
+buildAgentList();
+buildDirectBar();
+addChatMsg("orchestrator", "AI Engineering Platform online. All 6 agents standing by. What would you like to build?");
+</script>
+</body>
+</html>
