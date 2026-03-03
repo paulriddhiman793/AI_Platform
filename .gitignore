@@ -1,0 +1,102 @@
+# ─── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+venv/
+env/
+.env/
+.venv/
+ENV/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+.eggs/
+
+# ─── Environment & Secrets ───────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+*.env
+
+# ─── Node / Frontend ─────────────────────────────────────────────────────────
+node_modules/
+gui/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Vite build output
+gui/dist/
+gui/.vite/
+dist/
+
+# ─── IDE & Editor ────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ─── Logs ────────────────────────────────────────────────────────────────────
+*.log
+logs/
+*.log.*
+
+# ─── ML & Data ───────────────────────────────────────────────────────────────
+# MLflow
+mlruns/
+mlartifacts/
+
+# Model files (can be large)
+*.pkl
+*.pickle
+*.joblib
+*.h5
+*.pt
+*.pth
+*.onnx
+*.bin
+
+# Datasets (keep structure, ignore actual data)
+data/*.csv
+data/*.json
+data/*.parquet
+data/*.feather
+data/*.xlsx
+!data/.gitkeep
+
+# ─── Reports & Outputs ───────────────────────────────────────────────────────
+reports/*.xlsx
+reports/*.pdf
+!reports/.gitkeep
+
+# ─── ChromaDB (Phase 9) ──────────────────────────────────────────────────────
+chroma_db/
+memory/chroma/
+*.chroma
+
+# ─── Docker ──────────────────────────────────────────────────────────────────
+.docker/
+
+# ─── Testing ─────────────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+*.cover
+
+# ─── Misc ────────────────────────────────────────────────────────────────────
+*.bak
+*.tmp
+*.temp

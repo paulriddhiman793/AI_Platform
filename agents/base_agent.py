@@ -2,15 +2,17 @@
 base_agent.py — Shared base class for all 6 platform agents.
 
 Every agent inherits from BaseAgent and overrides:
-  - AGENT_ID: unique string identifier
-  - SYSTEM_PROMPT: role-specific instructions for the LLM
-  - get_tools(): list of LangChain/LangGraph tools this agent can call
+  - AGENT_ID       : unique string identifier
+  - SYSTEM_PROMPT  : role-specific instructions for the LLM
+  - handle_task()  : processes an incoming task payload
+  - get_tools()    : returns list of LangChain tools (Phase 2+)
 
-Phase 1: LLM calls are mocked with proxy responses.
-Phase 2+: Replace _call_llm() with real Claude API calls.
+Phase 1: LLM calls are mocked. Real logic is hardcoded in handle_task().
+Phase 2: Replace _call_llm() with real Claude API (claude-sonnet-4-6).
+Phase 3: Replace MockMessageBus with real Redis pub/sub.
+Phase 9: Replace in-memory memory with ChromaDB.
 """
 import asyncio
-import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime
 
@@ -22,79 +24,242 @@ class BaseAgent(ABC):
     SYSTEM_PROMPT: str = "You are a helpful AI agent."
 
     def __init__(self):
-        self.task_queue: asyncio.Queue = bus.subscribe(f"agent.{self.AGENT_ID}")
-        self.memory: list[dict] = []  # Phase 9: replace with ChromaDB
-        self.status: str = "idle"     # idle | working | error
+        # Subscribe to this agent's private channel on the message bus
+        self.inbox: asyncio.Queue = bus.subscribe(f"agent.{self.AGENT_ID}")
 
-    # ── Core loop ─────────────────────────────────────────────────────────────
+        # In-memory key-value store (Phase 9: replace with ChromaDB)
+        self._memory: dict[str, list[dict]] = {}
+
+        # Current status
+        self.status: str = "idle"  # idle | working | error
+
+    # ─── Main event loop ──────────────────────────────────────────────────────
 
     async def run(self) -> None:
-        """Main event loop. Listens for tasks and processes them."""
-        print(f"[{self.AGENT_ID}] Agent online, listening...")
+        """Start listening for tasks. Call this in asyncio.gather() at startup."""
+        print(f"[{self.AGENT_ID}] Online and listening on agent.{self.AGENT_ID}")
         while True:
-            envelope = await self.task_queue.get()
-            await self._handle(envelope)
+            envelope = await self.inbox.get()
+            asyncio.create_task(self._dispatch(envelope))
 
-    async def _handle(self, envelope: dict) -> None:
-        """Dispatch incoming message to handler."""
+    async def _dispatch(self, envelope: dict) -> None:
+        """Dispatch an incoming message envelope to handle_task()."""
         self.status = "working"
         try:
             payload = envelope["payload"]
-            response = await self.handle_task(payload)
-            if response:
-                await broadcast(self.AGENT_ID, response, task_id=payload.get("task_id"))
+            print(f"[{self.AGENT_ID}] Received task from {payload.get('from', '?')}: "
+                  f"{str(payload.get('content', ''))[:60]}...")
+            result = await self.handle_task(payload)
+            if result:
+                await self.report(result, task_id=payload.get("task_id"))
         except Exception as e:
-            print(f"[{self.AGENT_ID}] ERROR: {e}")
+            print(f"[{self.AGENT_ID}] ERROR in handle_task: {e}")
             self.status = "error"
-            await broadcast(self.AGENT_ID, f"Error in {self.AGENT_ID}: {str(e)}")
+            await self.report(
+                f"Error in {self.AGENT_ID}: {str(e)}. "
+                "Please check logs or provide clarification.",
+                task_id=envelope["payload"].get("task_id")
+            )
         finally:
-            self.status = "idle"
+            if self.status != "error":
+                self.status = "idle"
 
-    # ── Override in subclasses ────────────────────────────────────────────────
+    # ─── Override in subclasses ───────────────────────────────────────────────
 
     @abstractmethod
-    async def handle_task(self, payload: dict) -> str:
-        """Process an incoming task. Return the response string."""
+    async def handle_task(self, payload: dict) -> str | None:
+        """
+        Process an incoming task. Return a string to automatically broadcast
+        it as a report, or return None if you're sending messages manually.
+
+        payload keys:
+          - from      : sender agent id
+          - to        : this agent's id
+          - content   : the instruction or message text
+          - task_id   : shared task identifier (use for threading)
+          - type      : "p2p" | "broadcast"
+        """
         ...
 
-    # ── Communication helpers ─────────────────────────────────────────────────
+    def get_tools(self) -> list:
+        """
+        Return a list of LangChain tools this agent can use.
+        Phase 2+: override this in each subclass.
+        """
+        return []
+
+    # ─── Communication helpers ────────────────────────────────────────────────
 
     async def message(self, to_agent: str, content: str, task_id: str = None) -> None:
-        """Send a P2P message to another agent."""
-        await send_to_agent(self.AGENT_ID, to_agent, content, task_id)
+        """Send a peer-to-peer message directly to another agent."""
+        print(f"[{self.AGENT_ID}] → [{to_agent}]: {content[:60]}...")
+        await send_to_agent(
+            from_agent=self.AGENT_ID,
+            to_agent=to_agent,
+            content=content,
+            task_id=task_id
+        )
 
     async def report(self, content: str, task_id: str = None) -> None:
-        """Report findings/completion back to the orchestrator."""
-        await broadcast(self.AGENT_ID, content, task_id)
+        """Broadcast a result or update to the orchestrator / user channel."""
+        print(f"[{self.AGENT_ID}] REPORT: {content[:60]}...")
+        await broadcast(
+            from_agent=self.AGENT_ID,
+            content=content,
+            task_id=task_id
+        )
 
-    # ── LLM proxy (Phase 1 — mock) ────────────────────────────────────────────
+    # ─── LLM integration (Phase 1 = mock, Phase 2 = real) ────────────────────
 
-    async def _call_llm(self, user_message: str) -> str:
+    async def _call_llm(self, user_message: str, system_prompt: str = None) -> str:
         """
-        PHASE 1 MOCK: Returns a scripted proxy response.
-        Phase 2+: Replace with:
-            import anthropic
-            client = anthropic.Anthropic()
-            msg = client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=1024,
-                system=self.SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": user_message}]
+        Call the LLM with a user message and optional system override.
+
+        PHASE 1 (current): Returns a mock response after a short delay.
+
+        PHASE 2 — replace body with:
+        ─────────────────────────────────────────────────────────────
+        import anthropic
+        client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
+
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=2048,
+            system=system_prompt or self.SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_message}]
+        )
+        return response.content[0].text
+        ─────────────────────────────────────────────────────────────
+
+        PHASE 2 with tool use:
+        ─────────────────────────────────────────────────────────────
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=2048,
+            system=system_prompt or self.SYSTEM_PROMPT,
+            tools=self.get_tools(),
+            messages=[{"role": "user", "content": user_message}]
+        )
+        # Handle tool_use blocks in response.content
+        ─────────────────────────────────────────────────────────────
+        """
+        await asyncio.sleep(0.3)  # Simulate network latency
+        return f"[MOCK LLM] {self.AGENT_ID} processed: {user_message[:80]}"
+
+    async def _call_llm_with_history(self, history: list[dict]) -> str:
+        """
+        Multi-turn LLM call with conversation history.
+
+        history format: [{"role": "user"|"assistant", "content": "..."}]
+
+        PHASE 2 — replace body with:
+        ─────────────────────────────────────────────────────────────
+        import anthropic
+        client = anthropic.Anthropic()
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=2048,
+            system=self.SYSTEM_PROMPT,
+            messages=history
+        )
+        return response.content[0].text
+        ─────────────────────────────────────────────────────────────
+        """
+        await asyncio.sleep(0.3)
+        last_user = next((m["content"] for m in reversed(history) if m["role"] == "user"), "")
+        return f"[MOCK LLM] {self.AGENT_ID} responded to: {last_user[:60]}"
+
+    # ─── Self-healing loop (used by ML Engineer + others) ────────────────────
+
+    async def _run_with_healing(
+        self,
+        code: str,
+        max_retries: int = 5,
+        task_id: str = None
+    ) -> dict:
+        """
+        Execute code with an autonomous fix loop.
+
+        PHASE 1: Always succeeds (mock).
+        PHASE 2: Replace execute_in_sandbox() with real E2B call.
+
+        Returns: {"success": bool, "output": str, "attempts": int}
+        """
+        for attempt in range(1, max_retries + 1):
+            result = await self._execute_in_sandbox(code)
+
+            if result["success"]:
+                print(f"[{self.AGENT_ID}] Code succeeded on attempt {attempt}")
+                return {"success": True, "output": result["output"], "attempts": attempt}
+
+            print(f"[{self.AGENT_ID}] Attempt {attempt} failed: {result['error'][:60]}")
+            await self.report(
+                f"Attempt {attempt}/{max_retries} failed: {result['error'][:120]}. "
+                "Diagnosing and applying fix...",
+                task_id
             )
-            return msg.content[0].text
+
+            # Ask LLM to fix the code
+            fix_prompt = (
+                f"This Python code failed with the following error:\n\n"
+                f"ERROR:\n{result['error']}\n\n"
+                f"CODE:\n{code}\n\n"
+                "Please provide the corrected code only, no explanation."
+            )
+            code = await self._call_llm(fix_prompt)
+
+        # All retries exhausted
+        await self.report(
+            f"Could not auto-fix after {max_retries} attempts. "
+            "Escalating to user with full context.",
+            task_id
+        )
+        return {"success": False, "output": None, "attempts": max_retries}
+
+    async def _execute_in_sandbox(self, code: str) -> dict:
         """
-        await asyncio.sleep(0.5)  # Simulate latency
-        return f"[MOCK] {self.AGENT_ID} processed: {user_message[:80]}"
+        Execute code in a sandboxed environment.
 
-    # ── Memory (Phase 9 stub) ─────────────────────────────────────────────────
+        PHASE 1: Always returns success (mock).
+        PHASE 2 — replace with:
+        ─────────────────────────────────────────────────────────────
+        from e2b_code_interpreter import Sandbox
+        with Sandbox() as sandbox:
+            result = sandbox.run_code(code)
+            if result.error:
+                return {"success": False, "output": None, "error": str(result.error)}
+            return {"success": True, "output": str(result.text), "error": None}
+        ─────────────────────────────────────────────────────────────
+        """
+        await asyncio.sleep(0.2)
+        return {"success": True, "output": "Execution successful (mock)", "error": None}
 
-    def remember(self, key: str, value: str) -> None:
-        """Store a memory. Phase 9: replace with ChromaDB upsert."""
-        self.memory.append({"key": key, "value": value, "ts": datetime.utcnow().isoformat()})
+    # ─── Memory (Phase 9: replace with ChromaDB) ─────────────────────────────
 
-    def recall(self, key: str) -> str | None:
-        """Retrieve a memory. Phase 9: replace with ChromaDB similarity search."""
-        for m in reversed(self.memory):
-            if m["key"] == key:
-                return m["value"]
+    def remember(self, key: str, value: str, namespace: str = "default") -> None:
+        """
+        Store a memory entry.
+        Phase 9: replace with ChromaDB upsert.
+        """
+        if namespace not in self._memory:
+            self._memory[namespace] = []
+        self._memory[namespace].append({
+            "key": key,
+            "value": value,
+            "ts": datetime.utcnow().isoformat()
+        })
+
+    def recall(self, key: str, namespace: str = "default") -> str | None:
+        """
+        Retrieve the most recent memory for a key.
+        Phase 9: replace with ChromaDB similarity search.
+        """
+        entries = self._memory.get(namespace, [])
+        for entry in reversed(entries):
+            if entry["key"] == key:
+                return entry["value"]
         return None
+
+    def recall_all(self, namespace: str = "default") -> list[dict]:
+        """Return all memories in a namespace."""
+        return list(self._memory.get(namespace, []))
