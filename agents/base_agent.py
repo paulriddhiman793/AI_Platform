@@ -33,6 +33,9 @@ class BaseAgent(ABC):
         # Current status
         self.status: str = "idle"  # idle | working | error
 
+        # Dedup: ignore messages with the same (task_id + content) seen recently
+        self._seen: set[str] = set()
+
     # ─── Main event loop ──────────────────────────────────────────────────────
 
     async def run(self) -> None:
@@ -44,9 +47,22 @@ class BaseAgent(ABC):
 
     async def _dispatch(self, envelope: dict) -> None:
         """Dispatch an incoming message envelope to handle_task()."""
+        payload = envelope["payload"]
+
+        # ── Deduplication guard ───────────────────────────────────────────────
+        # If the bus delivers the same message twice (e.g. two WS connections
+        # both forwarding the same user instruction) we drop the duplicate.
+        dedup_key = f"{payload.get('task_id','')}:{payload.get('content','')}"
+        if dedup_key in self._seen:
+            print(f"[{self.AGENT_ID}] Duplicate message dropped: {dedup_key[:60]}")
+            return
+        self._seen.add(dedup_key)
+        # Keep the set from growing unbounded
+        if len(self._seen) > 200:
+            self._seen.pop()
+
         self.status = "working"
         try:
-            payload = envelope["payload"]
             print(f"[{self.AGENT_ID}] Received task from {payload.get('from', '?')}: "
                   f"{str(payload.get('content', ''))[:60]}...")
             result = await self.handle_task(payload)

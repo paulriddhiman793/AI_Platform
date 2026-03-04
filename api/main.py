@@ -1,26 +1,18 @@
 """
 api/main.py — Platform entry point
 
-Starts:
-  1. All 7 Python agents (async tasks on the message bus)
-  2. FastAPI + WebSocket server on http://localhost:8000
-
-Usage:
-    pip install fastapi uvicorn websockets
-    python -m api.main
-
-Then open the React GUI:
-    cd gui && npm run dev
-    → http://localhost:5173
+Key fix: agents are instantiated ONCE here and listeners are started
+explicitly BEFORE uvicorn starts — not via FastAPI's @on_event("startup")
+which can fire multiple times.
 """
 import asyncio
-import sys
 from pathlib import Path
 
 import uvicorn
 
 from tools.workspace import workspace
 from api.message_bus import bus, publish_status
+from api.server import app, start_listeners_once
 
 from agents.orchestrator       import OrchestratorAgent
 from agents.ml_engineer        import MLEngineerAgent
@@ -31,25 +23,22 @@ from agents.sast               import SASTAgent
 from agents.runtime_security   import RuntimeSecurityAgent
 
 
-# ─── Startup config ───────────────────────────────────────────────────────────
-
 def get_startup_config() -> tuple[str, str]:
     print("\n" + "="*60)
-    print("  AI Engineering Platform — Backend Server")
+    print("  AI Engineering Platform")
     print("="*60)
 
-    # Output path
     while True:
         output_path = input(
             "\nWhere should agents save project files?\n"
-            "Enter full path (e.g. D:\\Downloads or /Users/you/projects): "
+            "Path (e.g. D:\\Downloads): "
         ).strip()
         if not output_path:
-            print("  ❌ Path cannot be empty.")
+            print("  ❌ Cannot be empty.")
             continue
         path = Path(output_path)
         if not path.exists():
-            ans = input(f"  Path does not exist. Create it? (y/n): ").strip().lower()
+            ans = input("  Path doesn't exist. Create it? (y/n): ").strip().lower()
             if ans == "y":
                 path.mkdir(parents=True, exist_ok=True)
                 print(f"  ✅ Created: {path}")
@@ -58,39 +47,25 @@ def get_startup_config() -> tuple[str, str]:
             print(f"  ✅ Found: {path}")
             break
 
-    # Project name
     while True:
-        project_name = input(
-            "\nProject name (e.g. 'churn prediction', 'fraud detection'): "
-        ).strip()
+        project_name = input("\nProject name (e.g. 'fraud detection'): ").strip()
         if project_name:
             break
-        print("  ❌ Project name cannot be empty.")
+        print("  ❌ Cannot be empty.")
 
     return output_path, project_name
 
 
-# ─── Run all agents as background tasks ──────────────────────────────────────
-
-async def run_agents(agents: list) -> None:
-    """Start all agents concurrently."""
-    await asyncio.gather(*[agent.run() for agent in agents])
-
-
-# ─── Main ─────────────────────────────────────────────────────────────────────
-
 async def main() -> None:
-    # 1. Get config
+    # 1. Config
     output_path, project_name = get_startup_config()
 
-    # 2. Set up workspace
+    # 2. Workspace
     workspace.configure(output_path)
     project_root = workspace.new_project(project_name)
+    print(f"\n✅ Project: {project_root}")
 
-    print(f"\n✅ Project directory created:")
-    print(f"   {project_root}")
-
-    # 3. Instantiate all agents
+    # 3. Instantiate agents ONCE
     agents = [
         OrchestratorAgent(),
         MLEngineerAgent(),
@@ -101,40 +76,47 @@ async def main() -> None:
         RuntimeSecurityAgent(),
     ]
 
-    # Publish initial idle status for all agents
-    for agent in agents:
-        await publish_status(agent.AGENT_ID, "idle")
-
-    print("\nStarting all agents...")
+    print("\nAgents ready:")
     for a in agents:
         print(f"  ✅ {a.AGENT_ID}")
 
-    # 4. Start FastAPI server config
-    # Import here so workspace is configured before server starts
-    from api.server import app
+    # 4. Publish initial status
+    for agent in agents:
+        await publish_status(agent.AGENT_ID, "idle")
 
+    # 5. Start uvicorn in the background
     config = uvicorn.Config(
         app=app,
         host="0.0.0.0",
         port=8000,
-        log_level="warning",   # suppress uvicorn noise
+        log_level="warning",
+        # CRITICAL: disable reload — reload spawns a second process
+        # which creates a second set of agents and bus subscribers
+        reload=False,
     )
     server = uvicorn.Server(config)
 
-    print(f"\n🚀 WebSocket server running at ws://localhost:8000/ws")
-    print(f"   Open the React GUI: cd gui && npm run dev")
-    print(f"   Then visit: http://localhost:5173\n")
-    print("="*60)
+    print(f"\n🚀 Server: ws://localhost:8000/ws")
+    print(f"   GUI:    cd gui && npm run dev → http://localhost:5173")
+    print("="*60 + "\n")
 
-    # 5. Run agents + server concurrently
-    await asyncio.gather(
-        run_agents(agents),
-        server.serve(),
-    )
+    # 6. Run everything together
+    # start_listeners_once() is called inside the running event loop
+    # so tasks can be created properly
+    async def run_all():
+        # Start bus→GUI listeners (guarded — only runs once)
+        start_listeners_once()
+        # Start all agents + uvicorn concurrently
+        await asyncio.gather(
+            *[agent.run() for agent in agents],
+            server.serve(),
+        )
+
+    await run_all()
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n\nPlatform stopped.")
+        print("\nPlatform stopped.")

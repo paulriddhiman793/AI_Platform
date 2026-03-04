@@ -3,7 +3,6 @@ import { AGENTS, detectScenario, detectDirectResponse } from "./data/agents.js";
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 const WS_URL = "ws://localhost:8000/ws";
-const USE_BACKEND = true; // set false to run fully offline (mock only)
 
 let _id = 0;
 const uid = () => ++_id;
@@ -16,18 +15,12 @@ const TAG = {
   DONE:   { bg: "#16113a", color: "#a78bfa", border: "#302060" },
 };
 
-// ─── Avatar ───────────────────────────────────────────────────────────────────
+// ─── UI Components ────────────────────────────────────────────────────────────
 function Avatar({ agentId, size = 32 }) {
   const a = AGENTS[agentId];
   const isUser = agentId === "user";
   return (
-    <div style={{
-      width: size, height: size, borderRadius: "50%", flexShrink: 0,
-      display: "flex", alignItems: "center", justifyContent: "center",
-      fontSize: Math.floor(size * 0.44),
-      background: isUser ? "#14122e" : (a?.bgColor || "#111"),
-      border: `2px solid ${isUser ? "#6366f1" : (a?.color || "#333")}`,
-    }}>
+    <div style={{ width: size, height: size, borderRadius: "50%", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: Math.floor(size * 0.44), background: isUser ? "#14122e" : (a?.bgColor || "#111"), border: `2px solid ${isUser ? "#6366f1" : (a?.color || "#333")}` }}>
       {isUser ? "👤" : a?.icon}
     </div>
   );
@@ -43,7 +36,6 @@ function StatusDot({ status }) {
   );
 }
 
-// ─── Message bubble ───────────────────────────────────────────────────────────
 function Message({ msg, compact = false }) {
   const isUser = msg.from === "user";
   const a = AGENTS[msg.from];
@@ -61,13 +53,7 @@ function Message({ msg, compact = false }) {
           )}
           <span style={{ fontSize: 9, color: "#2a2a2a" }}>{fmt(msg.timestamp)}</span>
         </div>
-        <div style={{
-          padding: "11px 16px",
-          borderRadius: isUser ? "14px 3px 14px 14px" : "3px 14px 14px 14px",
-          background: isUser ? "#1a1740" : "#0b0b0b",
-          border: `1px solid ${isUser ? "#6366f122" : (ts ? ts.border + "44" : "#181818")}`,
-          color: "#c8c8d0", fontSize: 13.5, lineHeight: 1.7, whiteSpace: "pre-wrap",
-        }}>
+        <div style={{ padding: "11px 16px", borderRadius: isUser ? "14px 3px 14px 14px" : "3px 14px 14px 14px", background: isUser ? "#1a1740" : "#0b0b0b", border: `1px solid ${isUser ? "#6366f122" : (ts ? ts.border + "44" : "#181818")}`, color: "#c8c8d0", fontSize: 13.5, lineHeight: 1.7, whiteSpace: "pre-wrap" }}>
           {msg.content}
         </div>
       </div>
@@ -98,42 +84,42 @@ function ActivityCard({ entry }) {
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
         <Avatar agentId={entry.from} size={24} />
         <span style={{ fontSize: 10, color: fa.color, fontWeight: 700 }}>{fa.name}</span>
-        <svg width="14" height="10" viewBox="0 0 14 10" fill="none">
-          <path d="M1 5h10M8 2l3 3-3 3" stroke="#333" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-        </svg>
+        <svg width="14" height="10" viewBox="0 0 14 10" fill="none"><path d="M1 5h10M8 2l3 3-3 3" stroke="#333" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
         <Avatar agentId={entry.to} size={24} />
         <span style={{ fontSize: 10, color: ta.color, fontWeight: 700 }}>{ta.name}</span>
         <span style={{ fontSize: 9, color: "#252525", marginLeft: "auto" }}>{fmt(entry.timestamp)}</span>
       </div>
-      <div style={{ fontSize: 12, color: "#666", lineHeight: 1.6, padding: "8px 10px", borderRadius: 6, background: "#060606", border: "1px solid #141414" }}>
-        {entry.content}
-      </div>
+      <div style={{ fontSize: 12, color: "#666", lineHeight: 1.6, padding: "8px 10px", borderRadius: 6, background: "#060606", border: "1px solid #141414" }}>{entry.content}</div>
     </div>
   );
 }
 
 function FileCard({ entry }) {
   const a = AGENTS[entry.agent_id];
+  const isUpdate = (entry.version || 1) > 1;
   return (
-    <div style={{ padding: "10px 12px", borderRadius: 8, background: "#060f06", border: "1px solid #1a3a1a", marginBottom: 6, animation: "mIn .22s ease-out" }}>
+    <div style={{ padding: "10px 12px", borderRadius: 8, background: isUpdate ? "#060a10" : "#060f06", border: `1px solid ${isUpdate ? "#1a2a3a" : "#1a3a1a"}`, marginBottom: 6, animation: "mIn .22s ease-out" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-        <span style={{ fontSize: 14 }}>📄</span>
+        <span style={{ fontSize: 13 }}>{isUpdate ? "✏️" : "📄"}</span>
         <span style={{ fontSize: 10, color: a?.color || "#4ade80", fontWeight: 700 }}>{entry.agent_id}</span>
+        {isUpdate && (
+          <span style={{ fontSize: 9, color: "#60a5fa", background: "#0a1628", border: "1px solid #1a3060", padding: "1px 6px", borderRadius: 4 }}>v{entry.version} — overwritten</span>
+        )}
         <span style={{ fontSize: 9, color: "#252525", marginLeft: "auto" }}>{fmt(entry.timestamp)}</span>
       </div>
-      <div style={{ fontSize: 11, color: "#4ade80", fontFamily: "monospace" }}>{entry.filename}</div>
-      <div style={{ fontSize: 10, color: "#2a4a2a", marginTop: 2, fontFamily: "monospace", wordBreak: "break-all" }}>{entry.full_path}</div>
+      <div style={{ fontSize: 11, color: isUpdate ? "#60a5fa" : "#4ade80", fontFamily: "monospace" }}>{entry.filename}</div>
+      {entry.full_path && (
+        <div style={{ fontSize: 10, color: "#2a3a4a", marginTop: 2, fontFamily: "monospace", wordBreak: "break-all" }}>{entry.full_path}</div>
+      )}
     </div>
   );
 }
 
-// ─── Connection badge ─────────────────────────────────────────────────────────
 function ConnBadge({ status, project }) {
   const cfg = {
     connected:    { color: "#4ade80", bg: "#0a2a0a", border: "#1a4a1a", label: "Live" },
     connecting:   { color: "#facc15", bg: "#1a1400", border: "#3a3000", label: "Connecting…" },
-    disconnected: { color: "#f87171", bg: "#2a0a0a", border: "#4a1a1a", label: "Offline" },
-    mock:         { color: "#a78bfa", bg: "#160a2d", border: "#2d1060", label: "Mock Mode" },
+    disconnected: { color: "#f87171", bg: "#2a0a0a", border: "#4a1a1a", label: "Offline — mock mode" },
   }[status] || {};
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -146,7 +132,6 @@ function ConnBadge({ status, project }) {
   );
 }
 
-// ─── Sidebar ──────────────────────────────────────────────────────────────────
 function Sidebar({ agents, activeChat, onSelectChat, chatList }) {
   const groupChats = chatList.filter(c => c.type === "group");
   return (
@@ -154,29 +139,20 @@ function Sidebar({ agents, activeChat, onSelectChat, chatList }) {
       <div style={{ padding: "12px 12px 6px", borderBottom: "1px solid #0f0f0f", flexShrink: 0 }}>
         <span style={{ fontSize: 9, color: "#3a3a3a", fontWeight: 700, letterSpacing: ".12em" }}>CHATS</span>
       </div>
-
-      {/* Team */}
       <div style={{ padding: "8px 8px 2px" }}>
         <SidebarBtn id="team" isActive={activeChat === "team"} icon="🤝" iconBg="#12103a" iconBorder="#6366f1" color="#a5b4fc" name="Team" sub="All agent reports" unread={chatList.find(c=>c.id==="team")?.unread||0} onClick={() => onSelectChat("team")} />
       </div>
-
-      {/* Direct agents */}
       <div style={{ padding: "8px 12px 4px" }}>
         <span style={{ fontSize: 9, color: "#252525", letterSpacing: ".1em" }}>DIRECT</span>
       </div>
       <div style={{ padding: "0 8px 4px", display: "flex", flexDirection: "column", gap: 1 }}>
-        {Object.values(agents).map(a => {
-          const chat = chatList.find(c => c.id === a.id);
-          return (
-            <SidebarBtn key={a.id} id={a.id} isActive={activeChat === a.id}
-              icon={a.icon} iconBg={a.bgColor} iconBorder={a.color} color={a.color}
-              name={a.name} sub={<StatusDot status={a.status} />}
-              unread={chat?.unread || 0} onClick={() => onSelectChat(a.id)} />
-          );
-        })}
+        {Object.values(agents).map(a => (
+          <SidebarBtn key={a.id} id={a.id} isActive={activeChat === a.id}
+            icon={a.icon} iconBg={a.bgColor} iconBorder={a.color} color={a.color}
+            name={a.name} sub={<StatusDot status={a.status} />}
+            unread={chatList.find(c=>c.id===a.id)?.unread||0} onClick={() => onSelectChat(a.id)} />
+        ))}
       </div>
-
-      {/* Group chats */}
       {groupChats.length > 0 && (
         <>
           <div style={{ padding: "8px 12px 4px", borderTop: "1px solid #0f0f0f" }}>
@@ -187,7 +163,7 @@ function Sidebar({ agents, activeChat, onSelectChat, chatList }) {
               <SidebarBtn key={g.id} id={g.id} isActive={activeChat === g.id}
                 icon="👥" iconBg="#1a1a2e" iconBorder="#6366f1" color="#a78bfa"
                 name={g.title} sub={g.members.map(m => AGENTS[m]?.icon).join(" ")}
-                unread={g.unread || 0} onClick={() => onSelectChat(g.id)} isNew={g.isNew} />
+                unread={g.unread||0} onClick={() => onSelectChat(g.id)} isNew={g.isNew} />
             ))}
           </div>
         </>
@@ -196,7 +172,7 @@ function Sidebar({ agents, activeChat, onSelectChat, chatList }) {
   );
 }
 
-function SidebarBtn({ id, isActive, icon, iconBg, iconBorder, color, name, sub, unread, onClick, isNew }) {
+function SidebarBtn({ isActive, icon, iconBg, iconBorder, color, name, sub, unread, onClick, isNew }) {
   return (
     <button onClick={onClick} style={{ width: "100%", padding: "8px 9px", borderRadius: 8, cursor: "pointer", display: "flex", alignItems: "center", gap: 9, marginBottom: 1, background: isActive ? iconBg + "cc" : "transparent", border: `1px solid ${isActive ? iconBorder + "aa" : "transparent"}`, transition: "all .15s" }}>
       <div style={{ position: "relative", flexShrink: 0 }}>
@@ -213,10 +189,8 @@ function SidebarBtn({ id, isActive, icon, iconBg, iconBorder, color, name, sub, 
   );
 }
 
-// ─── Chat header ──────────────────────────────────────────────────────────────
 function ChatHeader({ chat, agents }) {
   if (!chat) return null;
-
   if (chat.id === "team") return (
     <div style={{ ...S.chatHdr, background: "#070707", borderBottom: "1px solid #111" }}>
       <div style={{ width: 34, height: 34, borderRadius: "50%", background: "#12103a", border: "2px solid #6366f1", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 17 }}>🤝</div>
@@ -226,7 +200,6 @@ function ChatHeader({ chat, agents }) {
       </div>
     </div>
   );
-
   if (chat.type === "group") {
     const memberAgents = chat.members.map(m => AGENTS[m]).filter(Boolean);
     return (
@@ -242,7 +215,6 @@ function ChatHeader({ chat, agents }) {
       </div>
     );
   }
-
   const a = agents[chat.id];
   return (
     <div style={{ ...S.chatHdr, background: a?.bgColor + "44", borderBottom: `1px solid ${a?.color}22` }}>
@@ -256,7 +228,6 @@ function ChatHeader({ chat, agents }) {
   );
 }
 
-// ─── Right panel: P2P + Files tabs ───────────────────────────────────────────
 function RightPanel({ p2pLog, fileLog, projectRoot }) {
   const [tab, setTab] = useState("p2p");
   return (
@@ -264,7 +235,7 @@ function RightPanel({ p2pLog, fileLog, projectRoot }) {
       <div style={{ display: "flex", borderBottom: "1px solid #0f0f0f", flexShrink: 0 }}>
         {[["p2p", "P2P MESSAGES"], ["files", "FILES"]].map(([id, label]) => (
           <button key={id} onClick={() => setTab(id)} style={{ flex: 1, padding: "10px 0", fontSize: 9, fontWeight: 700, letterSpacing: ".1em", cursor: "pointer", border: "none", color: tab === id ? "#c8c8d0" : "#2a2a2a", background: tab === id ? "#0d0d0d" : "transparent", borderBottom: tab === id ? "2px solid #6366f1" : "2px solid transparent" }}>
-            {label}
+            {label} {id === "files" && fileLog.length > 0 && <span style={{ color: "#4ade80" }}>({fileLog.length})</span>}
           </button>
         ))}
       </div>
@@ -292,33 +263,34 @@ export default function App() {
   const [agents, setAgents] = useState(() =>
     Object.fromEntries(Object.entries(AGENTS).map(([k,v]) => [k, { ...v }]))
   );
-
-  // chatList holds team + direct + group chats
   const [chatList, setChatList] = useState(() => {
     const list = [
-      { id: "team", type: "team", messages: [{ id: uid(), from: "orchestrator", tag: "STATUS", content: "AI Engineering Platform online. All 6 agents standing by.\n\nFor real backend: run  python -m api.main\nFor mock mode: just type below!", timestamp: Date.now() }], unread: 0 },
+      { id: "team", type: "team", messages: [{ id: uid(), from: "orchestrator", tag: "STATUS", content: "AI Engineering Platform online. All agents standing by.\n\nBackend running → messages go to real Python agents.\nBackend offline → full mock mode with simulated responses.", timestamp: Date.now() }], unread: 0 },
     ];
     for (const a of Object.values(AGENTS)) {
-      list.push({ id: a.id, type: "direct", messages: [{ id: uid(), from: a.id, tag: "STATUS", content: `Hi, I'm ${a.name}. ${a.role}\n\nGive me a direct instruction and I'll handle it here. If I need another agent, a group thread will be created automatically.`, timestamp: Date.now() }], unread: 0 });
+      list.push({ id: a.id, type: "direct", messages: [{ id: uid(), from: a.id, tag: "STATUS", content: `Hi, I'm ${a.name}. ${a.role}\n\nGive me a direct instruction. If I need another agent, a group thread auto-spawns.`, timestamp: Date.now() }], unread: 0 });
     }
     return list;
   });
 
-  const [activeChat, setActiveChat]   = useState("team");
-  const [typingIn, setTypingIn]       = useState({});
-  const [inputs, setInputs]           = useState({});
-  const [isBusy, setIsBusy]           = useState(false);
-  const [connStatus, setConnStatus]   = useState("connecting");
-  const [projectName, setProjectName] = useState(null);
-  const [projectRoot, setProjectRoot] = useState(null);
-  const [p2pLog, setP2pLog]           = useState([]);
-  const [fileLog, setFileLog]         = useState([]);
+  const [activeChat, setActiveChat]     = useState("team");
+  const [typingIn, setTypingIn]         = useState({});
+  const [inputs, setInputs]             = useState({});
+  const [isBusy, setIsBusy]             = useState(false);
+  const [connStatus, setConnStatus]     = useState("connecting");
+  const [projectName, setProjectName]   = useState(null);
+  const [projectRoot, setProjectRoot]   = useState(null);
+  const [p2pLog, setP2pLog]             = useState([]);
+  const [fileLog, setFileLog]           = useState([]);
 
-  const wsRef      = useRef(null);
-  const timers     = useRef([]);
-  const msgsEndRef = useRef({});
-  const reconnTimer = useRef(null);
+  const wsRef         = useRef(null);
+  const timers        = useRef([]);
+  const msgsEndRef    = useRef({});
+  const reconnTimer   = useRef(null);
   const activeChatRef = useRef(activeChat);
+
+  // Track whether backend is truly live (not just WS connected)
+  const backendLive = connStatus === "connected";
 
   useEffect(() => { activeChatRef.current = activeChat; }, [activeChat]);
 
@@ -335,31 +307,17 @@ export default function App() {
 
   // ── WebSocket ─────────────────────────────────────────────────────────────
   const connectWS = useCallback(() => {
-    if (!USE_BACKEND) { setConnStatus("mock"); return; }
     setConnStatus("connecting");
     try {
       const ws = new WebSocket(WS_URL);
       wsRef.current = ws;
-
-      ws.onopen = () => {
-        setConnStatus("connected");
-        console.log("[WS] Connected");
-      };
-
-      ws.onclose = () => {
-        setConnStatus("disconnected");
-        reconnTimer.current = setTimeout(connectWS, 3000);
-      };
-
-      ws.onerror = () => setConnStatus("disconnected");
-
+      ws.onopen    = () => { setConnStatus("connected"); };
+      ws.onclose   = () => { setConnStatus("disconnected"); reconnTimer.current = setTimeout(connectWS, 3000); };
+      ws.onerror   = () => { setConnStatus("disconnected"); };
       ws.onmessage = (evt) => {
-        try {
-          const msg = JSON.parse(evt.data);
-          handleWsMessage(msg);
-        } catch(e) { console.error(e); }
+        try { handleWsMessage(JSON.parse(evt.data)); } catch(e) {}
       };
-    } catch(e) {
+    } catch {
       setConnStatus("disconnected");
       reconnTimer.current = setTimeout(connectWS, 3000);
     }
@@ -367,38 +325,48 @@ export default function App() {
 
   useEffect(() => {
     connectWS();
-    return () => {
-      clearTimeout(reconnTimer.current);
-      wsRef.current?.close();
-    };
+    return () => { clearTimeout(reconnTimer.current); wsRef.current?.close(); };
   }, [connectWS]);
 
-  // ── Handle WebSocket messages from backend (team chat only) ───────────────
+  // ── File log helper — updates existing entry or adds new ──────────────────
+  const upsertFile = useCallback((agent_id, filename, full_path) => {
+    setFileLog(prev => {
+      const idx = prev.findIndex(f => f.filename === filename && f.agent_id === agent_id);
+      const entry = {
+        id:        idx >= 0 ? prev[idx].id : uid(),
+        agent_id, filename, full_path,
+        timestamp: Date.now(),
+        version:   idx >= 0 ? (prev[idx].version || 1) + 1 : 1,
+      };
+      if (idx >= 0) { const a = [...prev]; a[idx] = entry; return a; }
+      return [...prev, entry];
+    });
+  }, []);
+
+  // ── Handle incoming backend messages ──────────────────────────────────────
   const handleWsMessage = useCallback((msg) => {
     const { type, from, to, content, tag, extra } = msg;
-    const ts = Date.now();
 
     if (type === "project_info") {
       setProjectName(extra?.project_name);
       setProjectRoot(extra?.project_root);
-      addMsg("team", "orchestrator",
-        `✅ Connected to project: ${extra?.project_name}\n📁 ${extra?.project_root}`, "STATUS");
+      addMsgDirect("team", "orchestrator",
+        `✅ Project: ${extra?.project_name}\n📁 ${extra?.project_root}`, "STATUS");
       return;
     }
 
     if (type === "team_message") {
-      // Show typing briefly then add message
       setTypingIn(prev => ({ ...prev, team: from }));
       const t = setTimeout(() => {
         setTypingIn(prev => ({ ...prev, team: null }));
-        addMsg("team", from, content, tag || _detectTag(content));
+        addMsgDirect("team", from, content, tag || detectTag(content));
       }, 500);
       timers.current.push(t);
       return;
     }
 
     if (type === "p2p_message") {
-      setP2pLog(prev => [...prev, { id: uid(), from, to, content, timestamp: ts }]);
+      setP2pLog(prev => [...prev, { id: uid(), from, to, content, timestamp: Date.now() }]);
       return;
     }
 
@@ -408,14 +376,12 @@ export default function App() {
     }
 
     if (type === "file_written") {
-      setFileLog(prev => [...prev, { id: uid(), agent_id: extra?.agent_id || from, filename: extra?.filename, full_path: extra?.full_path, timestamp: ts }]);
-      // Also show in team chat
-      addMsg("team", from, `📄 File written: ${extra?.filename}`, "STATUS");
+      // Backend confirms a real file was written to disk
+      upsertFile(extra?.agent_id || from, extra?.filename, extra?.full_path);
       return;
     }
-  }, []);
+  }, [upsertFile]);
 
-  // Rebind when needed
   useEffect(() => {
     if (wsRef.current) {
       wsRef.current.onmessage = (evt) => {
@@ -424,8 +390,8 @@ export default function App() {
     }
   }, [handleWsMessage]);
 
-  // ── Helpers ───────────────────────────────────────────────────────────────
-  const addMsg = useCallback((chatId, from, content, tag) => {
+  // ── Message helpers ───────────────────────────────────────────────────────
+  const addMsgDirect = (chatId, from, content, tag) => {
     setChatList(prev => prev.map(c => {
       if (c.id !== chatId) return c;
       const isVisible = activeChatRef.current === chatId;
@@ -435,30 +401,34 @@ export default function App() {
         unread: isVisible ? 0 : (c.unread || 0) + (from !== "user" ? 1 : 0),
       };
     }));
-  }, []);
-
-  const setTyping = useCallback((chatId, agentId) => {
-    setTypingIn(prev => ({ ...prev, [chatId]: agentId || null }));
-  }, []);
-
-  const setAgentStatus = useCallback((id, status) => {
-    setAgents(prev => ({ ...prev, [id]: { ...prev[id], status } }));
-  }, []);
-
+  };
+  const addMsg = useCallback(addMsgDirect, []);
+  const setTyping = useCallback((chatId, agentId) => setTypingIn(prev => ({ ...prev, [chatId]: agentId || null })), []);
+  const setAgentStatus = useCallback((id, status) => setAgents(prev => ({ ...prev, [id]: { ...prev[id], status } })), []);
   const clearTimers = () => { timers.current.forEach(clearTimeout); timers.current = []; };
 
-  // ── Spawn group chat (local — always works regardless of backend) ──────────
+  // ── Fire file write to backend (local/mock-only when backend offline) ─────
+  const fireFileWrite = useCallback((fileWrite, fromAgent) => {
+    if (!fileWrite) return;
+    const { agent, filename, content } = fileWrite;
+
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      // Send to backend → Python workspace.write() → real file on disk
+      // Backend will confirm back via "file_written" message → upsertFile()
+      wsRef.current.send(JSON.stringify({
+        type: "file_write", agent_id: agent, filename, content, from: fromAgent,
+      }));
+    } else {
+      // Backend offline — update UI only (no disk write possible)
+      upsertFile(agent, filename, `[offline]/${agent}/${filename}`);
+    }
+  }, [upsertFile]);
+
+  // ── Group chat spawn (always local — direct/group chats don't touch backend)
   const spawnGroupChat = useCallback((groupDef, triggerChatId) => {
     const groupId = "group_" + uid();
-    const newGroup = {
-      id: groupId, type: "group",
-      title: groupDef.title, reason: groupDef.reason,
-      members: groupDef.members, messages: [], unread: 0, isNew: true,
-    };
-    setChatList(prev => [...prev, newGroup]);
-
-    addMsg(triggerChatId, groupDef.members[0],
-      `↗ Spawning group thread: "${groupDef.title}" — ${groupDef.reason}`, "STATUS");
+    setChatList(prev => [...prev, { id: groupId, type: "group", title: groupDef.title, reason: groupDef.reason, members: groupDef.members, messages: [], unread: 0, isNew: true }]);
+    addMsg(triggerChatId, groupDef.members[0], `↗ Spawning group thread: "${groupDef.title}" — ${groupDef.reason}`, "STATUS");
 
     const t = setTimeout(() => {
       setActiveChat(groupId);
@@ -470,9 +440,14 @@ export default function App() {
         const t2 = setTimeout(() => {
           setTyping(groupId, null);
           addMsg(groupId, step.from, step.content, step.tag);
-          // Also echo to P2P log if it's inter-agent
-          if (step.from !== groupDef.members[0] || idx > 0) {
-            setP2pLog(prev => [...prev, { id: uid(), from: step.from, to: groupDef.members[0], content: step.content, timestamp: Date.now() }]);
+
+          if (step.fileWrite) {
+            // ✅ This fires the real disk write via backend
+            fireFileWrite(step.fileWrite, step.from);
+          }
+
+          if (idx > 0) {
+            setP2pLog(prev => [...prev, { id: uid(), from: step.from, to: groupDef.members.find(m => m !== step.from) || groupDef.members[0], content: step.content, timestamp: Date.now() }]);
           }
           if (isLast) groupDef.members.forEach(id => setAgentStatus(id, "idle"));
         }, step.delay);
@@ -480,9 +455,9 @@ export default function App() {
       });
     }, 800);
     timers.current.push(t);
-  }, [addMsg, setAgentStatus, setTyping]);
+  }, [addMsg, setAgentStatus, setTyping, fireFileWrite]);
 
-  // ── Team chat: send to real backend OR run mock scenario ──────────────────
+  // ── Team scenario (mock — only runs when backend is OFFLINE) ─────────────
   const runTeamScenario = useCallback((scenario) => {
     clearTimers();
     setIsBusy(true);
@@ -493,15 +468,19 @@ export default function App() {
       const t1 = setTimeout(() => { if (step.type === "team") setTyping("team", step.from); }, step.delay - 400);
       const t2 = setTimeout(() => {
         setTyping("team", null);
-        if (step.type === "team") addMsg("team", step.from, step.content, step.tag);
-        else if (step.type === "p2p") setP2pLog(prev => [...prev, { id: uid(), from: step.from, to: step.to, content: step.content, timestamp: Date.now() }]);
+        if (step.type === "team") {
+          addMsg("team", step.from, step.content, step.tag);
+          if (step.fileWrite) fireFileWrite(step.fileWrite, step.from);
+        } else if (step.type === "p2p") {
+          setP2pLog(prev => [...prev, { id: uid(), from: step.from, to: step.to, content: step.content, timestamp: Date.now() }]);
+        }
         if (isLast) { inv.forEach(id => setAgentStatus(id, "idle")); setIsBusy(false); }
       }, step.delay);
       timers.current.push(t1, t2);
     });
-  }, [addMsg, setAgentStatus, setTyping]);
+  }, [addMsg, setAgentStatus, setTyping, fireFileWrite]);
 
-  // ── Handle send ───────────────────────────────────────────────────────────
+  // ── Send handler ──────────────────────────────────────────────────────────
   const handleSend = useCallback((chatId) => {
     const text = (inputs[chatId] || "").trim();
     if (!text) return;
@@ -514,26 +493,23 @@ export default function App() {
     // ── Team chat ──────────────────────────────────────────────────────────
     if (chatId === "team") {
       if (isBusy) return;
-      // Try real backend first, fall back to mock
-      if (connStatus === "connected" && wsRef.current?.readyState === WebSocket.OPEN) {
+
+      if (backendLive && wsRef.current?.readyState === WebSocket.OPEN) {
+        // ✅ FIX 1: Backend live — send ONLY to backend, do NOT run mock scenario
+        // Real Python agents respond → messages stream back via WebSocket
         wsRef.current.send(JSON.stringify({
           type: "user_message", content: text, to: "team",
           task_id: Math.random().toString(36).slice(2, 10),
         }));
-        // Also run mock scenario locally for immediate visual feedback
-        const scenario = detectScenario(text);
-        const t = setTimeout(() => runTeamScenario(scenario), 400);
-        timers.current.push(t);
       } else {
-        // Pure mock
+        // Backend offline — run mock scenario (it handles everything locally)
         const scenario = detectScenario(text);
-        const t = setTimeout(() => runTeamScenario(scenario), 350);
-        timers.current.push(t);
+        setTimeout(() => runTeamScenario(scenario), 350);
       }
       return;
     }
 
-    // ── Direct chat (always local — private chats don't go to team) ────────
+    // ── Direct chat (always local — private) ───────────────────────────────
     if (chat.type === "direct") {
       const agentId = chatId;
       setAgentStatus(agentId, "working");
@@ -546,6 +522,8 @@ export default function App() {
         const t2 = setTimeout(() => {
           setTyping(chatId, null);
           addMsg(chatId, agentId, step.content, step.tag);
+          // ✅ FIX 2: fire real file write for direct chat steps
+          if (step.fileWrite) fireFileWrite(step.fileWrite, agentId);
           if (isLast) {
             setAgentStatus(agentId, "idle");
             if (willSpawn) spawnGroupChat(spawnGroup, chatId);
@@ -556,7 +534,7 @@ export default function App() {
       return;
     }
 
-    // ── Group chat ──────────────────────────────────────────────────────────
+    // ── Group chat ─────────────────────────────────────────────────────────
     if (chat.type === "group") {
       const responder = chat.members[0];
       setAgentStatus(responder, "working");
@@ -564,26 +542,24 @@ export default function App() {
       const t2 = setTimeout(() => {
         setTyping(chatId, null);
         setAgentStatus(responder, "idle");
-        addMsg(chatId, responder, "Noted. I'll incorporate that and update the thread.", "STATUS");
+        addMsg(chatId, responder, "Noted. Incorporating that and updating the thread.", "STATUS");
       }, 1500);
       timers.current.push(t1, t2);
     }
-  }, [inputs, chatList, isBusy, connStatus, addMsg, setAgentStatus, setTyping, runTeamScenario, spawnGroupChat]);
+  }, [inputs, chatList, isBusy, backendLive, addMsg, setAgentStatus, setTyping, runTeamScenario, spawnGroupChat, fireFileWrite]);
 
   const currentChat = chatList.find(c => c.id === activeChat);
-  const teamChat    = chatList.find(c => c.id === "team");
 
   return (
     <div style={S.root}>
       <style>{CSS}</style>
 
-      {/* Header */}
       <header style={S.header}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <div style={S.logo}>🤖</div>
           <div>
             <div style={{ fontSize: 14, fontWeight: 700, letterSpacing: ".05em", color: "#e8e8f0" }}>AI Engineering Platform</div>
-            <div style={{ fontSize: 9, color: "#3a3a3a", letterSpacing: ".1em", textTransform: "uppercase" }}>Multi-Agent Autonomous System · v2.0</div>
+            <div style={{ fontSize: 9, color: "#3a3a3a", letterSpacing: ".1em", textTransform: "uppercase" }}>Multi-Agent Autonomous System · v2.1</div>
           </div>
         </div>
         <ConnBadge status={connStatus} project={projectName} />
@@ -592,31 +568,32 @@ export default function App() {
       <div style={S.body}>
         <Sidebar agents={agents} activeChat={activeChat} onSelectChat={setActiveChat} chatList={chatList} />
 
-        {/* Main chat */}
         <div style={S.chatArea}>
           <ChatHeader chat={currentChat} agents={agents} />
 
-          {/* Context banners */}
           {currentChat?.type === "direct" && (
             <div style={{ padding: "8px 18px", background: "#090909", borderBottom: "1px solid #111", fontSize: 11, color: "#2a2a2a" }}>
               <span style={{ color: AGENTS[activeChat]?.color, fontWeight: 700 }}>Private channel</span>
-              {" — messages handled directly by this agent. If another agent is needed, a group thread auto-spawns."}
+              {" — handled locally. If another agent is needed, a group thread auto-spawns."}
             </div>
           )}
           {currentChat?.type === "group" && (
             <div style={{ padding: "8px 18px", background: "#0a091f", borderBottom: "1px solid #6366f122", fontSize: 11, color: "#2a2a2a" }}>
               <span style={{ color: "#a78bfa", fontWeight: 700 }}>Group thread</span>
-              {" — auto-created because additional agents were needed. All members coordinate here."}
+              {" — auto-created. All members coordinate here. Files are rewritten as changes are made."}
+            </div>
+          )}
+          {!backendLive && chatList.find(c=>c.id==="team")?.messages.length <= 1 && (
+            <div style={{ padding: "8px 18px", background: "#1a0f00", borderBottom: "1px solid #3a2000", fontSize: 11, color: "#f59e0b" }}>
+              ⚠ Backend offline — running in mock mode. Run <code style={{ background: "#111", padding: "1px 5px", borderRadius: 3 }}>python -m api.main</code> to connect real agents.
             </div>
           )}
 
-          {/* Messages */}
           <div ref={el => { msgsEndRef.current[activeChat] = el; }} style={S.messages}>
             {currentChat?.messages.map(m => <Message key={m.id} msg={m} compact={currentChat.type === "group"} />)}
             {typingIn[activeChat] && <Typing agentId={typingIn[activeChat]} />}
           </div>
 
-          {/* Input */}
           <div style={S.inputArea}>
             <div style={S.inputRow}>
               <textarea
@@ -627,31 +604,21 @@ export default function App() {
                 rows={2}
                 placeholder={
                   activeChat === "team" && isBusy ? "Agents working…"
-                  : activeChat === "team" ? "Give the team an instruction… e.g. 'train a churn model' · 'security audit' · 'build a dashboard'"
+                  : activeChat === "team" ? "Give the team an instruction… e.g. 'create a fraud detection model'"
                   : currentChat?.type === "group" ? "Add instruction to this thread…"
-                  : `Message ${AGENTS[activeChat]?.name}… e.g. 'fix the bug' · 'retrain' · 'deploy' · 'run a full audit'`
+                  : `Message ${AGENTS[activeChat]?.name}… e.g. 'fix the bug' · 'retrain' · 'deploy'`
                 }
-                style={{
-                  ...S.textarea,
-                  borderColor: activeChat === "team" ? "#1a1a1a" : currentChat?.type === "group" ? "#6366f133" : (AGENTS[activeChat]?.color + "33"),
-                  opacity: activeChat === "team" && isBusy ? 0.5 : 1,
-                }}
+                style={{ ...S.textarea, borderColor: activeChat === "team" ? "#1a1a1a" : currentChat?.type === "group" ? "#6366f133" : (AGENTS[activeChat]?.color + "33"), opacity: activeChat === "team" && isBusy ? 0.5 : 1 }}
               />
               <button
                 onClick={() => handleSend(activeChat)}
-                disabled={activeChat === "team" && isBusy || !(inputs[activeChat]||"").trim()}
-                style={{
-                  ...S.sendBtn,
-                  background: activeChat === "team" ? "#6366f1" : currentChat?.type === "group" ? "#6366f1" : (AGENTS[activeChat]?.color || "#6366f1"),
-                  opacity: (activeChat === "team" && isBusy || !(inputs[activeChat]||"").trim()) ? 0.3 : 1,
-                }}
+                disabled={(activeChat === "team" && isBusy) || !(inputs[activeChat]||"").trim()}
+                style={{ ...S.sendBtn, background: activeChat === "team" ? "#6366f1" : currentChat?.type === "group" ? "#6366f1" : (AGENTS[activeChat]?.color || "#6366f1"), opacity: ((activeChat === "team" && isBusy) || !(inputs[activeChat]||"").trim()) ? 0.3 : 1 }}
               >↑</button>
             </div>
-            <div style={{ fontSize: 9, color: "#1e1e1e", marginTop: 5, letterSpacing: ".05em" }}>
+            <div style={{ fontSize: 9, color: "#1e1e1e", marginTop: 5 }}>
               ENTER to send · SHIFT+ENTER for newline
-              {activeChat !== "team" && currentChat?.type !== "group" && (
-                <span style={{ color: "#2a2a2a" }}> · Group threads auto-spawn when more agents are needed</span>
-              )}
+              {activeChat !== "team" && currentChat?.type !== "group" && <span style={{ color: "#2a2a2a" }}> · Group threads auto-spawn when more agents are needed</span>}
             </div>
           </div>
         </div>
@@ -689,13 +656,12 @@ const CSS = `
   textarea::placeholder { color: #222; }
   textarea:focus { outline: none; }
   button:focus { outline: none; }
-  @keyframes mIn { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:translateY(0); } }
+  @keyframes mIn { from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);} }
   @keyframes sPulse { 0%,100%{opacity:1;transform:scale(1);}50%{opacity:.4;transform:scale(.8);} }
   @keyframes tDot { 0%,80%,100%{opacity:.2;transform:scale(.8);}40%{opacity:1;transform:scale(1.2);} }
 `;
 
-// ─── Helper ───────────────────────────────────────────────────────────────────
-function _detectTag(content) {
+function detectTag(content) {
   const c = content.toLowerCase();
   if (["✅","complete","done","deployed","approved","passed"].some(k => c.includes(k))) return "DONE";
   if (["🔴","critical","exploit","blocked","❌"].some(k => c.includes(k))) return "ALERT";

@@ -1,37 +1,10 @@
 """
 api/server.py — FastAPI + WebSocket server
 
-Bridges the Python agent system to the React GUI.
-
-Flow:
-  React GUI  →  WebSocket /ws  →  Orchestrator  →  Agents
-  Agents     →  message bus    →  WebSocket /ws  →  React GUI
-
-Message format (JSON) sent TO the GUI:
-  {
-    "type":      "team_message" | "p2p_message" | "agent_status" |
-                 "file_written" | "project_info" | "error",
-    "from":      agent_id,
-    "to":        agent_id | "user",
-    "content":   string,
-    "tag":       "STATUS" | "REPORT" | "ALERT" | "DONE" | null,
-    "timestamp": ISO string,
-    "task_id":   string | null,
-    "extra":     {} | null   (file path, project path, etc.)
-  }
-
-Message format (JSON) received FROM the GUI:
-  {
-    "type":    "user_message" | "direct_message" | "ping",
-    "content": string,
-    "to":      agent_id | "team",
-    "chat_id": string
-  }
-
-Usage:
-  python -m api.main   (starts everything)
+Fix: listeners are started exactly once via a module-level flag.
+Uvicorn's reload/startup can fire the @app.on_event("startup") multiple
+times in some configs — this guard prevents duplicate listeners.
 """
-
 import asyncio
 import json
 import uuid
@@ -47,7 +20,6 @@ from tools.workspace import workspace
 
 app = FastAPI(title="AI Engineering Platform")
 
-# Allow React dev server to connect
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://localhost:3000"],
@@ -56,14 +28,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Track all connected WebSocket clients
 connected_clients: Set[WebSocket] = set()
 
+# ── Guard: listeners only ever start once ─────────────────────────────────────
+_listeners_started = False
 
-# ─── Broadcast to all connected GUI clients ───────────────────────────────────
+
+# ─── Broadcast to all GUI clients ─────────────────────────────────────────────
 
 async def broadcast_to_gui(message: dict) -> None:
-    """Send a JSON message to every connected React client."""
     if not connected_clients:
         return
     payload = json.dumps({**message, "timestamp": datetime.utcnow().isoformat()})
@@ -76,103 +49,101 @@ async def broadcast_to_gui(message: dict) -> None:
     connected_clients.difference_update(dead)
 
 
-# ─── Agent message bus listeners ─────────────────────────────────────────────
+# ─── Bus listeners (each runs exactly once) ───────────────────────────────────
 
-async def listen_orchestrator_inbox() -> None:
-    """
-    Forward all agent reports (orchestrator.inbox) to the GUI as team messages.
-    """
+async def _listen_orchestrator_inbox() -> None:
     q = bus.subscribe("orchestrator.inbox")
     while True:
         envelope = await q.get()
-        payload = envelope["payload"]
-        from_agent = payload.get("from", "unknown")
-        content    = payload.get("content", "")
-        task_id    = payload.get("task_id")
-
-        # Detect tag from content keywords
-        tag = _detect_tag(content)
-
+        p = envelope["payload"]
         await broadcast_to_gui({
             "type":    "team_message",
-            "from":    from_agent,
+            "from":    p.get("from", "unknown"),
             "to":      "team",
-            "content": content,
-            "tag":     tag,
-            "task_id": task_id,
+            "content": p.get("content", ""),
+            "tag":     _detect_tag(p.get("content", "")),
+            "task_id": p.get("task_id"),
         })
 
 
-async def listen_p2p() -> None:
-    """
-    Forward all p2p agent-to-agent messages to the GUI as activity feed entries.
-    We subscribe to a special "p2p.monitor" channel that agents publish to.
-    """
+async def _listen_p2p() -> None:
     q = bus.subscribe("p2p.monitor")
     while True:
         envelope = await q.get()
-        payload = envelope["payload"]
+        p = envelope["payload"]
         await broadcast_to_gui({
             "type":    "p2p_message",
-            "from":    payload.get("from"),
-            "to":      payload.get("to"),
-            "content": payload.get("content", ""),
+            "from":    p.get("from"),
+            "to":      p.get("to"),
+            "content": p.get("content", ""),
             "tag":     None,
-            "task_id": payload.get("task_id"),
+            "task_id": p.get("task_id"),
         })
 
 
-async def listen_user_output() -> None:
-    """Forward direct user-targeted messages to the GUI."""
+async def _listen_user_output() -> None:
     q = bus.subscribe("user.output")
     while True:
         envelope = await q.get()
-        payload = envelope["payload"]
+        p = envelope["payload"]
         await broadcast_to_gui({
             "type":    "team_message",
-            "from":    payload.get("from"),
+            "from":    p.get("from"),
             "to":      "user",
-            "content": payload.get("content", ""),
+            "content": p.get("content", ""),
             "tag":     "DONE",
-            "task_id": payload.get("task_id"),
+            "task_id": p.get("task_id"),
         })
 
 
-async def listen_file_events() -> None:
-    """Forward workspace file-write events to the GUI."""
+async def _listen_file_events() -> None:
     q = bus.subscribe("workspace.files")
     while True:
         envelope = await q.get()
-        payload = envelope["payload"]
+        p = envelope["payload"]
         await broadcast_to_gui({
             "type":    "file_written",
-            "from":    payload.get("agent_id"),
-            "to":      "user",
-            "content": f"File written: {payload.get('path')}",
+            "from":    p.get("agent_id"),
+            "to":      "gui",
+            "content": p.get("content", ""),
             "tag":     "STATUS",
-            "task_id": payload.get("task_id"),
-            "extra":   {
-                "filename": payload.get("filename"),
-                "agent_id": payload.get("agent_id"),
-                "full_path": payload.get("path"),
+            "task_id": p.get("task_id"),
+            "extra": {
+                "agent_id":  p.get("agent_id"),
+                "filename":  p.get("filename"),
+                "full_path": p.get("path"),
             },
         })
 
 
-async def listen_agent_status() -> None:
-    """Forward agent status changes (idle/working/error) to the GUI."""
+async def _listen_agent_status() -> None:
     q = bus.subscribe("agent.status")
     while True:
         envelope = await q.get()
-        payload = envelope["payload"]
+        p = envelope["payload"]
         await broadcast_to_gui({
             "type":    "agent_status",
-            "from":    payload.get("agent_id"),
+            "from":    p.get("agent_id"),
             "to":      "gui",
-            "content": payload.get("status"),
+            "content": p.get("status"),
             "tag":     None,
             "task_id": None,
         })
+
+
+def start_listeners_once() -> None:
+    """Call this once at startup. Safe to call multiple times — guarded."""
+    global _listeners_started
+    if _listeners_started:
+        print("[SERVER] Listeners already running — skipping duplicate start.")
+        return
+    _listeners_started = True
+    asyncio.create_task(_listen_orchestrator_inbox())
+    asyncio.create_task(_listen_p2p())
+    asyncio.create_task(_listen_user_output())
+    asyncio.create_task(_listen_file_events())
+    asyncio.create_task(_listen_agent_status())
+    print("[SERVER] Bus listeners started (once).")
 
 
 # ─── WebSocket endpoint ───────────────────────────────────────────────────────
@@ -181,15 +152,15 @@ async def listen_agent_status() -> None:
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     connected_clients.add(websocket)
-    print(f"[SERVER] GUI connected. Total clients: {len(connected_clients)}")
+    print(f"[SERVER] GUI connected. Clients: {len(connected_clients)}")
 
-    # Send project info immediately on connect
+    # Send project info on connect
     if workspace.is_initialized:
         await websocket.send_text(json.dumps({
             "type":      "project_info",
             "from":      "server",
             "to":        "gui",
-            "content":   f"Connected to project: {workspace.project_name}",
+            "content":   f"Project: {workspace.project_name}",
             "tag":       "STATUS",
             "timestamp": datetime.utcnow().isoformat(),
             "task_id":   None,
@@ -207,18 +178,44 @@ async def websocket_endpoint(websocket: WebSocket):
             except json.JSONDecodeError:
                 continue
 
-            msg_type = msg.get("type", "user_message")
+            msg_type = msg.get("type", "")
 
+            # ── Ping ──────────────────────────────────────────────────────────
             if msg_type == "ping":
                 await websocket.send_text(json.dumps({
                     "type": "pong", "from": "server", "to": "gui",
                     "content": "pong", "tag": None,
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "task_id": None,
+                    "timestamp": datetime.utcnow().isoformat(), "task_id": None,
                 }))
                 continue
 
-            # User sent a message — route to orchestrator or specific agent
+            # ── File write from frontend ───────────────────────────────────
+            if msg_type == "file_write":
+                agent_id     = msg.get("agent_id", "shared")
+                filename     = msg.get("filename", "output.txt")
+                file_content = msg.get("content", "")
+                from_agent   = msg.get("from", agent_id)
+                if workspace.is_initialized:
+                    try:
+                        written_path = workspace.write(agent_id, filename, file_content)
+                        await broadcast_to_gui({
+                            "type":    "file_written",
+                            "from":    from_agent,
+                            "to":      "gui",
+                            "content": f"File written: {filename}",
+                            "tag":     "STATUS",
+                            "task_id": None,
+                            "extra": {
+                                "agent_id":  agent_id,
+                                "filename":  filename,
+                                "full_path": str(written_path),
+                            },
+                        })
+                    except Exception as e:
+                        print(f"[SERVER] File write error: {e}")
+                continue
+
+            # ── User message → orchestrator ────────────────────────────────
             content = msg.get("content", "").strip()
             to      = msg.get("to", "team")
             task_id = msg.get("task_id") or str(uuid.uuid4())[:8]
@@ -226,21 +223,13 @@ async def websocket_endpoint(websocket: WebSocket):
             if not content:
                 continue
 
-            if to == "team":
-                await send_to_agent(
-                    from_agent="user",
-                    to_agent="orchestrator",
-                    content=content,
-                    task_id=task_id,
-                )
-            else:
-                # Direct message to a specific agent
-                await send_to_agent(
-                    from_agent="user",
-                    to_agent=to,
-                    content=content,
-                    task_id=task_id,
-                )
+            target = "orchestrator" if to == "team" else to
+            await send_to_agent(
+                from_agent="user",
+                to_agent=target,
+                content=content,
+                task_id=task_id,
+            )
 
     except WebSocketDisconnect:
         connected_clients.discard(websocket)
@@ -250,47 +239,34 @@ async def websocket_endpoint(websocket: WebSocket):
         print(f"[SERVER] WebSocket error: {e}")
 
 
-# ─── REST endpoints ───────────────────────────────────────────────────────────
+# ─── REST ─────────────────────────────────────────────────────────────────────
 
 @app.get("/health")
 async def health():
     return {
-        "status": "ok",
-        "project": workspace.project_name,
+        "status":       "ok",
+        "project":      workspace.project_name,
         "project_root": str(workspace.project_root) if workspace.project_root else None,
-        "clients": len(connected_clients),
+        "clients":      len(connected_clients),
+        "listeners":    _listeners_started,
     }
+
 
 @app.get("/files")
 async def list_files():
-    """Return all files written so far in the current project."""
     if not workspace.is_initialized:
         return {"files": []}
     return {"files": workspace.list_files(), "root": str(workspace.project_root)}
 
 
-# ─── Helpers ─────────────────────────────────────────────────────────────────
+# ─── Helper ───────────────────────────────────────────────────────────────────
 
 def _detect_tag(content: str) -> str:
-    """Infer a display tag from message content."""
     c = content.lower()
-    if any(kw in c for kw in ["✅", "complete", "done", "deployed", "approved", "passed", "ci passed"]):
+    if any(k in c for k in ["✅", "complete", "done", "deployed", "approved", "passed", "ci passed"]):
         return "DONE"
-    if any(kw in c for kw in ["🔴", "critical", "exploit", "blocked", "❌"]):
+    if any(k in c for k in ["🔴", "critical", "exploit", "blocked", "❌"]):
         return "ALERT"
-    if any(kw in c for kw in ["found", "result", "report", "eda", "accuracy", "score", "metric"]):
+    if any(k in c for k in ["found", "result", "report", "eda", "accuracy", "score", "metric"]):
         return "REPORT"
     return "STATUS"
-
-
-# ─── Startup: launch all bus listeners ───────────────────────────────────────
-
-@app.on_event("startup")
-async def start_listeners():
-    """Start all message bus listeners when FastAPI starts."""
-    asyncio.create_task(listen_orchestrator_inbox())
-    asyncio.create_task(listen_p2p())
-    asyncio.create_task(listen_user_output())
-    asyncio.create_task(listen_file_events())
-    asyncio.create_task(listen_agent_status())
-    print("[SERVER] All bus listeners started.")

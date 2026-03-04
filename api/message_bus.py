@@ -1,16 +1,10 @@
 """
 api/message_bus.py — Agent Message Bus
 
-Phase 1: In-memory async pub/sub.
-Phase 3: Replace with redis.asyncio.
-
-Channels:
-  agent.{id}         — each agent's private inbox
-  orchestrator.inbox — all agent reports (forwarded to GUI as team messages)
-  p2p.monitor        — copy of every p2p message (GUI activity feed)
-  agent.status       — agent idle/working/error changes
-  workspace.files    — file write events (GUI file notifications)
-  user.output        — direct user-targeted messages
+Fixes:
+  - p2p.monitor is now a COPY channel — it never delivers to agents
+  - All channels are clearly separated
+  - Singleton protection: bus is only created once
 """
 import asyncio
 from datetime import datetime
@@ -40,21 +34,21 @@ class MockMessageBus:
         for q in self._subscribers.get(channel, []):
             await q.put(envelope)
 
+    def subscriber_count(self, channel: str) -> int:
+        return len(self._subscribers.get(channel, []))
+
     def get_log(self) -> list[dict]:
         return list(self._log)
-
-    def get_log_for_task(self, task_id: str) -> list[dict]:
-        return [e for e in self._log if e["payload"].get("task_id") == task_id]
 
     def clear_log(self) -> None:
         self._log.clear()
 
 
-# Global singleton
+# ── Singleton — only ever one bus ─────────────────────────────────────────────
 bus = MockMessageBus()
 
 
-# ─── Helpers used by BaseAgent ────────────────────────────────────────────────
+# ── Agent messaging helpers ───────────────────────────────────────────────────
 
 async def send_to_agent(
     from_agent: str,
@@ -62,7 +56,10 @@ async def send_to_agent(
     content: str,
     task_id: Optional[str] = None,
 ) -> None:
-    """Send a P2P message to a specific agent's inbox."""
+    """
+    Send a P2P message to a specific agent's inbox.
+    Also copies to p2p.monitor (GUI activity feed only — agents don't subscribe there).
+    """
     msg = {
         "from":    from_agent,
         "to":      to_agent,
@@ -70,10 +67,8 @@ async def send_to_agent(
         "task_id": task_id,
         "type":    "p2p",
     }
-    # Deliver to agent's inbox
-    await bus.publish(f"agent.{to_agent}", msg)
-    # Also publish to p2p monitor so the GUI activity feed can show it
-    await bus.publish("p2p.monitor", msg)
+    await bus.publish(f"agent.{to_agent}", msg)   # → agent's inbox
+    await bus.publish("p2p.monitor", msg)          # → GUI activity feed (read-only copy)
 
 
 async def broadcast(
@@ -81,7 +76,7 @@ async def broadcast(
     content: str,
     task_id: Optional[str] = None,
 ) -> None:
-    """Broadcast a report to the orchestrator inbox (shown in team chat)."""
+    """Broadcast a result to the orchestrator inbox — shown in team chat."""
     await bus.publish("orchestrator.inbox", {
         "from":    from_agent,
         "to":      "orchestrator",
@@ -96,7 +91,6 @@ async def send_to_user(
     content: str,
     task_id: Optional[str] = None,
 ) -> None:
-    """Send a message directly to the user output channel."""
     await bus.publish("user.output", {
         "from":    from_agent,
         "to":      "user",
@@ -107,7 +101,6 @@ async def send_to_user(
 
 
 async def publish_status(agent_id: str, status: str) -> None:
-    """Publish an agent status change (idle/working/error) to the GUI."""
     await bus.publish("agent.status", {
         "agent_id": agent_id,
         "status":   status,
@@ -122,7 +115,6 @@ async def publish_file_event(
     full_path: str,
     task_id: Optional[str] = None,
 ) -> None:
-    """Notify the GUI that an agent wrote a file to the workspace."""
     await bus.publish("workspace.files", {
         "agent_id": agent_id,
         "filename": filename,
