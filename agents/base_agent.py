@@ -17,6 +17,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 
 from api.message_bus import bus, send_to_agent, broadcast
+from tools.workspace import workspace
 
 
 class BaseAgent(ABC):
@@ -249,6 +250,56 @@ class BaseAgent(ABC):
         """
         await asyncio.sleep(0.2)
         return {"success": True, "output": "Execution successful (mock)", "error": None}
+
+    # ─── Workspace file access ───────────────────────────────────────────────
+
+    def read_file(self, agent_id: str, filename: str) -> str | None:
+        """
+        Read a file written by any agent in the current project.
+        Returns file content as string, or None if not found.
+        """
+        try:
+            return workspace.read(agent_id, filename)
+        except Exception:
+            return None
+
+    def list_workspace_files(self, agent_id: str = None) -> list[str]:
+        """List all files in the workspace (or for a specific agent folder)."""
+        try:
+            return workspace.list_files(agent_id)
+        except Exception:
+            return []
+
+    def workspace_context(self, *file_specs: tuple[str, str]) -> str:
+        """
+        Build a context string from one or more workspace files.
+
+        Usage:
+            ctx = self.workspace_context(
+                ("ml_engineer", "pipeline.py"),
+                ("data_scientist", "eda_report.md"),
+                ("sast", "scan_report_ml.md"),
+            )
+
+        Returns a formatted string with each file's content, or a note
+        if the file doesn't exist yet. Pass this to handle_task logic so
+        every response is grounded in the actual files on disk.
+        """
+        if not workspace.is_initialized:
+            return "[workspace not initialized]"
+
+        parts = []
+        for agent_id, filename in file_specs:
+            content = self.read_file(agent_id, filename)
+            if content:
+                parts.append(
+                    f"=== {agent_id}/{filename} ===\n{content}\n"
+                )
+            else:
+                parts.append(
+                    f"=== {agent_id}/{filename} ===\n[file not yet written]\n"
+                )
+        return "\n".join(parts) if parts else "[no files found]"
 
     # ─── Memory (Phase 9: replace with ChromaDB) ─────────────────────────────
 
