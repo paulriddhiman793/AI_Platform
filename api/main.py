@@ -1,21 +1,26 @@
 """
-main.py — Platform entry point
+api/main.py — Platform entry point
 
-Asks the user for:
-  1. Output directory (e.g. D:/Downloads)
-  2. Project name (e.g. "churn prediction model")
-
-Then creates the project folder structure and starts all agents.
+Starts:
+  1. All 7 Python agents (async tasks on the message bus)
+  2. FastAPI + WebSocket server on http://localhost:8000
 
 Usage:
+    pip install fastapi uvicorn websockets
     python -m api.main
+
+Then open the React GUI:
+    cd gui && npm run dev
+    → http://localhost:5173
 """
 import asyncio
-import uuid
+import sys
 from pathlib import Path
 
-from api.message_bus import bus, send_to_agent
+import uvicorn
+
 from tools.workspace import workspace
+from api.message_bus import bus, publish_status
 
 from agents.orchestrator       import OrchestratorAgent
 from agents.ml_engineer        import MLEngineerAgent
@@ -26,43 +31,37 @@ from agents.sast               import SASTAgent
 from agents.runtime_security   import RuntimeSecurityAgent
 
 
-# ─── Startup prompt ───────────────────────────────────────────────────────────
+# ─── Startup config ───────────────────────────────────────────────────────────
 
 def get_startup_config() -> tuple[str, str]:
-    """Ask user for output path and project name before starting agents."""
-
     print("\n" + "="*60)
-    print("  AI Engineering Platform")
+    print("  AI Engineering Platform — Backend Server")
     print("="*60)
 
     # Output path
     while True:
         output_path = input(
-            "\nWhere should agents save their code?\n"
+            "\nWhere should agents save project files?\n"
             "Enter full path (e.g. D:\\Downloads or /Users/you/projects): "
         ).strip()
-
         if not output_path:
             print("  ❌ Path cannot be empty.")
             continue
-
         path = Path(output_path)
         if not path.exists():
-            create = input(f"  Path does not exist. Create it? (y/n): ").strip().lower()
-            if create == "y":
+            ans = input(f"  Path does not exist. Create it? (y/n): ").strip().lower()
+            if ans == "y":
                 path.mkdir(parents=True, exist_ok=True)
                 print(f"  ✅ Created: {path}")
                 break
-            else:
-                continue
         else:
-            print(f"  ✅ Path exists: {path}")
+            print(f"  ✅ Found: {path}")
             break
 
     # Project name
     while True:
         project_name = input(
-            "\nProject name (e.g. 'churn prediction', 'fraud detection dashboard'): "
+            "\nProject name (e.g. 'churn prediction', 'fraud detection'): "
         ).strip()
         if project_name:
             break
@@ -71,88 +70,27 @@ def get_startup_config() -> tuple[str, str]:
     return output_path, project_name
 
 
-# ─── CLI response loop ────────────────────────────────────────────────────────
+# ─── Run all agents as background tasks ──────────────────────────────────────
 
-async def cli_loop() -> None:
-    output_q = bus.subscribe("orchestrator.inbox")
-    user_q   = bus.subscribe("user.output")
-
-    print("\n" + "="*60)
-    print("  CLI Mode — type an instruction and press Enter")
-    print("  Type 'files' to see all files written so far")
-    print("  Type 'quit' to exit")
-    print("="*60 + "\n")
-
-    async def drain_queues():
-        while True:
-            try:
-                while True:
-                    envelope = output_q.get_nowait()
-                    payload  = envelope["payload"]
-                    agent    = payload.get("from", "?").replace("_", " ").upper()
-                    content  = payload.get("content", "")
-                    print(f"\n[{agent}]\n{content}\n")
-            except asyncio.QueueEmpty:
-                pass
-
-            try:
-                while True:
-                    envelope = user_q.get_nowait()
-                    payload  = envelope["payload"]
-                    agent    = payload.get("from", "?").replace("_", " ").upper()
-                    content  = payload.get("content", "")
-                    print(f"\n[{agent} → YOU]\n{content}\n")
-            except asyncio.QueueEmpty:
-                pass
-
-            await asyncio.sleep(0.1)
-
-    asyncio.create_task(drain_queues())
-    loop = asyncio.get_event_loop()
-
-    while True:
-        try:
-            user_input = await loop.run_in_executor(None, input, "You: ")
-        except (EOFError, KeyboardInterrupt):
-            print("\nExiting.")
-            break
-
-        cmd = user_input.strip().lower()
-
-        if cmd in ("quit", "exit", "q"):
-            print(f"\nProject saved at:\n  {workspace.project_root}")
-            print("Platform shutting down.")
-            break
-
-        if cmd == "files":
-            workspace.print_tree()
-            continue
-
-        if not user_input.strip():
-            continue
-
-        task_id = str(uuid.uuid4())[:8]
-        await send_to_agent(
-            from_agent="user",
-            to_agent="orchestrator",
-            content=user_input.strip(),
-            task_id=task_id,
-        )
-        await asyncio.sleep(10)
+async def run_agents(agents: list) -> None:
+    """Start all agents concurrently."""
+    await asyncio.gather(*[agent.run() for agent in agents])
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 async def main() -> None:
+    # 1. Get config
     output_path, project_name = get_startup_config()
 
+    # 2. Set up workspace
     workspace.configure(output_path)
     project_root = workspace.new_project(project_name)
 
     print(f"\n✅ Project directory created:")
-    print(f"   {project_root}\n")
-    print("Starting all agents...")
+    print(f"   {project_root}")
 
+    # 3. Instantiate all agents
     agents = [
         OrchestratorAgent(),
         MLEngineerAgent(),
@@ -163,11 +101,40 @@ async def main() -> None:
         RuntimeSecurityAgent(),
     ]
 
+    # Publish initial idle status for all agents
+    for agent in agents:
+        await publish_status(agent.AGENT_ID, "idle")
+
+    print("\nStarting all agents...")
+    for a in agents:
+        print(f"  ✅ {a.AGENT_ID}")
+
+    # 4. Start FastAPI server config
+    # Import here so workspace is configured before server starts
+    from api.server import app
+
+    config = uvicorn.Config(
+        app=app,
+        host="0.0.0.0",
+        port=8000,
+        log_level="warning",   # suppress uvicorn noise
+    )
+    server = uvicorn.Server(config)
+
+    print(f"\n🚀 WebSocket server running at ws://localhost:8000/ws")
+    print(f"   Open the React GUI: cd gui && npm run dev")
+    print(f"   Then visit: http://localhost:5173\n")
+    print("="*60)
+
+    # 5. Run agents + server concurrently
     await asyncio.gather(
-        *[agent.run() for agent in agents],
-        cli_loop(),
+        run_agents(agents),
+        server.serve(),
     )
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n\nPlatform stopped.")
