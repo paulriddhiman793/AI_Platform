@@ -259,6 +259,71 @@ async def list_files():
     return {"files": workspace.list_files(), "root": str(workspace.project_root)}
 
 
+@app.post("/predict")
+async def predict(features: dict):
+    """
+    Live prediction endpoint — loads the model written by ML Engineer.
+    Returns real prediction if model exists, mock response otherwise.
+    """
+    import json
+    from pathlib import Path
+
+    # Try to load the real model from workspace
+    if workspace.is_initialized:
+        model_candidates = [
+            workspace.project_root / "ml_engineer" / "model" / "model.joblib",
+            workspace.project_root / "shared"      / "model.joblib",
+        ]
+        for model_path in model_candidates:
+            if model_path.exists():
+                try:
+                    import joblib, pandas as pd
+                    model = joblib.load(model_path)
+                    df    = pd.DataFrame([features])
+                    return {
+                        "prediction":  bool(model.predict(df)[0]),
+                        "probability": round(float(model.predict_proba(df)[0][1]), 4),
+                        "source":      "real_model",
+                        "model_path":  str(model_path),
+                    }
+                except Exception as e:
+                    pass  # Fall through to mock
+
+    # Mock response when model isn't trained yet
+    age      = features.get("account_age", 24)
+    duration = features.get("session_duration", 5.2)
+    prob     = round(min(0.95, max(0.05, (age * 0.02 + duration * 0.05))), 4)
+    return {
+        "prediction":  prob > 0.5,
+        "probability": prob,
+        "source":      "mock",
+        "note":        "Model not yet trained — run the pipeline first",
+    }
+
+
+@app.get("/metrics")
+async def metrics():
+    """Model performance metrics — reads from workspace if available."""
+    if workspace.is_initialized:
+        # Try to read actual metrics logged by ML Engineer
+        try:
+            metrics_path = workspace.project_root / "shared" / "metrics.json"
+            if metrics_path.exists():
+                import json
+                return json.loads(metrics_path.read_text())
+        except Exception:
+            pass
+    return {
+        "accuracy":         94.1,
+        "f1":               0.89,
+        "auc":              0.96,
+        "drift_score":      0.03,
+        "latency_p95":      118,
+        "inference_volume": 8420,
+        "source":           "mock",
+    }
+
+
 # ─── Helper ───────────────────────────────────────────────────────────────────
 
 def _detect_tag(content: str) -> str:

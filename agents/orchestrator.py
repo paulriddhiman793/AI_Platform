@@ -42,16 +42,14 @@ ROUTING_TABLE = {
 
     # Reporting
     "report":     ["data_analyst"],
-    "dashboard":  ["frontend", "data_analyst"],
+    "dashboard":  ["data_analyst"],   # frontend only spawns if "frontend" is explicitly in message
     "metrics":    ["data_analyst"],
     "kpi":        ["data_analyst"],
     "monitoring": ["data_analyst", "ml_engineer"],
 
-    # Frontend
-    "ui":         ["frontend"],
-    "interface":  ["frontend"],
-    "component":  ["frontend"],
-    "react":      ["frontend"],
+    # Frontend — ONLY triggered when "frontend" is explicitly in the message
+    # Always includes ml_engineer + data_scientist so the project API gets built too
+    "frontend":   ["ml_engineer", "data_scientist", "frontend"],
 
     # Security
     "security":   ["sast", "runtime_security"],
