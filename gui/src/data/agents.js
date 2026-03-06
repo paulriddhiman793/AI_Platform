@@ -46,6 +46,12 @@ export const AGENTS = {
     role: "Live threat detection, pen testing, anomaly monitoring.",
     status: "idle",
   },
+  github: {
+    id: "github", name: "GitHub Agent", shortName: "GH", icon: "GH",
+    color: "#93c5fd", bgColor: "#0b1022",
+    role: "Pushes repo, per-agent branches, and merges to main.",
+    status: "idle",
+  },
 };
 
 // ─── File content templates ───────────────────────────────────────────────────

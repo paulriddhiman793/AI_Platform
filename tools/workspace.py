@@ -41,7 +41,7 @@ class WorkspaceManager:
         self._project_root = self._output_path / f"{safe_name}_{timestamp}"
 
         for subdir in ["ml_engineer", "data_scientist", "data_analyst",
-                       "frontend", "sast", "runtime_security", "shared"]:
+                       "frontend", "sast", "runtime_security", "github", "shared"]:
             (self._project_root / subdir).mkdir(parents=True, exist_ok=True)
 
         # Write project info file

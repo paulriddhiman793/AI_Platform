@@ -288,9 +288,41 @@ export default function App() {
   const msgsEndRef    = useRef({});
   const reconnTimer   = useRef(null);
   const activeChatRef = useRef(activeChat);
+  const taskRouteRef  = useRef({});
+  const groupMapRef   = useRef({});
 
   // Track whether backend is truly live (not just WS connected)
   const backendLive = connStatus === "connected";
+
+  const getOrCreateGroupChat = useCallback((members, reason = null) => {
+    const normalized = [...new Set(members)].filter(Boolean).sort();
+    if (normalized.length < 2) return null;
+    const key = normalized.join("|");
+    const existing = groupMapRef.current[key];
+    if (existing) return existing;
+
+    const groupId = `group_${key.replace(/\|/g, "_")}`;
+    const title = normalized.map(m => AGENTS[m]?.shortName || m).join(" + ");
+    setChatList(prev => {
+      const already = prev.find(c => c.id === groupId);
+      if (already) return prev;
+      return [
+        ...prev,
+        {
+          id: groupId,
+          type: "group",
+          title: `Group: ${title}`,
+          reason: reason || "Auto-created from private multi-agent collaboration.",
+          members: normalized,
+          messages: [],
+          unread: 0,
+          isNew: true,
+        },
+      ];
+    });
+    groupMapRef.current[key] = groupId;
+    return groupId;
+  }, []);
 
   useEffect(() => { activeChatRef.current = activeChat; }, [activeChat]);
 
@@ -345,21 +377,35 @@ export default function App() {
 
   // ── Handle incoming backend messages ──────────────────────────────────────
   const handleWsMessage = useCallback((msg) => {
-    const { type, from, to, content, tag, extra } = msg;
+    const { type, from, to, content, tag, extra, task_id } = msg;
+    const pushMsg = (chatId, fromId, text, messageTag) => {
+      setChatList(prev => prev.map(c => {
+        if (c.id !== chatId) return c;
+        const isVisible = activeChatRef.current === chatId;
+        return {
+          ...c,
+          messages: [...c.messages, { id: uid(), from: fromId, content: text, tag: messageTag, timestamp: Date.now() }],
+          unread: isVisible ? 0 : (c.unread || 0) + (fromId !== "user" ? 1 : 0),
+        };
+      }));
+    };
 
     if (type === "project_info") {
       setProjectName(extra?.project_name);
       setProjectRoot(extra?.project_root);
-      addMsgDirect("team", "orchestrator",
+      pushMsg("team", "orchestrator",
         `✅ Project: ${extra?.project_name}\n📁 ${extra?.project_root}`, "STATUS");
       return;
     }
 
     if (type === "team_message") {
-      setTypingIn(prev => ({ ...prev, team: from }));
+      const route = task_id ? taskRouteRef.current[task_id] : null;
+      const targetChatId = route?.groupChatId || route?.chatId || "team";
+
+      setTypingIn(prev => ({ ...prev, [targetChatId]: from }));
       const t = setTimeout(() => {
-        setTypingIn(prev => ({ ...prev, team: null }));
-        addMsgDirect("team", from, content, tag || detectTag(content));
+        setTypingIn(prev => ({ ...prev, [targetChatId]: null }));
+        pushMsg(targetChatId, from, content, tag || detectTag(content));
       }, 500);
       timers.current.push(t);
       return;
@@ -367,6 +413,26 @@ export default function App() {
 
     if (type === "p2p_message") {
       setP2pLog(prev => [...prev, { id: uid(), from, to, content, timestamp: Date.now() }]);
+      const route = task_id ? taskRouteRef.current[task_id] : null;
+      if (route?.mode === "direct") {
+        const fromAgent = AGENTS[from] ? from : null;
+        const toAgent = AGENTS[to] ? to : null;
+        if (fromAgent) route.members.add(fromAgent);
+        if (toAgent) route.members.add(toAgent);
+
+        if (route.members.size > 1) {
+          const groupId = getOrCreateGroupChat(
+            Array.from(route.members),
+            "Auto-created from private multi-agent collaboration."
+          );
+          if (groupId) route.groupChatId = groupId;
+        }
+
+        const chatId = route.groupChatId || route.chatId;
+        if (chatId && from !== "user") {
+          pushMsg(chatId, from, content, "STATUS");
+        }
+      }
       return;
     }
 
@@ -380,7 +446,7 @@ export default function App() {
       upsertFile(extra?.agent_id || from, extra?.filename, extra?.full_path);
       return;
     }
-  }, [upsertFile]);
+  }, [upsertFile, getOrCreateGroupChat]);
 
   useEffect(() => {
     if (wsRef.current) {
@@ -495,11 +561,18 @@ export default function App() {
       if (isBusy) return;
 
       if (backendLive && wsRef.current?.readyState === WebSocket.OPEN) {
+        const taskId = Math.random().toString(36).slice(2, 10);
+        taskRouteRef.current[taskId] = {
+          mode: "team",
+          chatId: "team",
+          members: new Set(),
+          groupChatId: null,
+        };
         // ✅ FIX 1: Backend live — send ONLY to backend, do NOT run mock scenario
         // Real Python agents respond → messages stream back via WebSocket
         wsRef.current.send(JSON.stringify({
           type: "user_message", content: text, to: "team",
-          task_id: Math.random().toString(36).slice(2, 10),
+          task_id: taskId,
         }));
       } else {
         // Backend offline — run mock scenario (it handles everything locally)
@@ -512,6 +585,25 @@ export default function App() {
     // ── Direct chat (always local — private) ───────────────────────────────
     if (chat.type === "direct") {
       const agentId = chatId;
+
+      if (backendLive && wsRef.current?.readyState === WebSocket.OPEN) {
+        const taskId = Math.random().toString(36).slice(2, 10);
+        taskRouteRef.current[taskId] = {
+          mode: "direct",
+          chatId: agentId,
+          members: new Set([agentId]),
+          groupChatId: null,
+        };
+        setTyping(chatId, agentId);
+        wsRef.current.send(JSON.stringify({
+          type: "user_message",
+          content: text,
+          to: agentId,
+          task_id: taskId,
+        }));
+        return;
+      }
+
       setAgentStatus(agentId, "working");
       const { steps, spawnGroup } = detectDirectResponse(agentId, text);
 
@@ -526,6 +618,7 @@ export default function App() {
           if (step.fileWrite) fireFileWrite(step.fileWrite, agentId);
           if (isLast) {
             setAgentStatus(agentId, "idle");
+            setTyping(chatId, null);
             if (willSpawn) spawnGroupChat(spawnGroup, chatId);
           }
         }, step.delay);
@@ -574,7 +667,9 @@ export default function App() {
           {currentChat?.type === "direct" && (
             <div style={{ padding: "8px 18px", background: "#090909", borderBottom: "1px solid #111", fontSize: 11, color: "#2a2a2a" }}>
               <span style={{ color: AGENTS[activeChat]?.color, fontWeight: 700 }}>Private channel</span>
-              {" — handled locally. If another agent is needed, a group thread auto-spawns."}
+              {backendLive
+                ? " — routed to real backend agent."
+                : " — backend offline, using local mock flow."}
             </div>
           )}
           {currentChat?.type === "group" && (
