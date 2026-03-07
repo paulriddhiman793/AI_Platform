@@ -290,6 +290,7 @@ export default function App() {
   const activeChatRef = useRef(activeChat);
   const taskRouteRef  = useRef({});
   const groupMapRef   = useRef({});
+  const recentMsgRef  = useRef(new Map());
 
   // Track whether backend is truly live (not just WS connected)
   const backendLive = connStatus === "connected";
@@ -379,6 +380,12 @@ export default function App() {
   const handleWsMessage = useCallback((msg) => {
     const { type, from, to, content, tag, extra, task_id } = msg;
     const pushMsg = (chatId, fromId, text, messageTag) => {
+      const dedupKey = `${chatId}|${fromId}|${messageTag || ""}|${text}`;
+      const now = Date.now();
+      const last = recentMsgRef.current.get(dedupKey);
+      if (last && now - last < 1500) return;
+      recentMsgRef.current.set(dedupKey, now);
+
       setChatList(prev => prev.map(c => {
         if (c.id !== chatId) return c;
         const isVisible = activeChatRef.current === chatId;
@@ -426,11 +433,6 @@ export default function App() {
             "Auto-created from private multi-agent collaboration."
           );
           if (groupId) route.groupChatId = groupId;
-        }
-
-        const chatId = route.groupChatId || route.chatId;
-        if (chatId && from !== "user") {
-          pushMsg(chatId, from, content, "STATUS");
         }
       }
       return;

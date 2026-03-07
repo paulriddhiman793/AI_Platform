@@ -53,9 +53,15 @@ ROUTING_TABLE = {
 }
 
 
+BUILD_FLOW_KEYWORDS = (
+    "model", "train", "predict", "pipeline", "accuracy",
+    "churn", "fraud", "classif", "retrain",
+)
+
+
 class OrchestratorAgent(BaseAgent):
     AGENT_ID = "orchestrator"
-    SYSTEM_PROMPT = """You are the Orchestrator of a multi-agent AI engineering platform."""
+    SYSTEM_PROMPT = "You are the Orchestrator of a multi-agent AI engineering platform."
 
     def __init__(self):
         super().__init__()
@@ -63,7 +69,7 @@ class OrchestratorAgent(BaseAgent):
 
     def route(self, user_message: str) -> list[str]:
         msg = user_message.lower()
-        assigned = []
+        assigned: list[str] = []
         seen = set()
 
         for keyword, agents in ROUTING_TABLE.items():
@@ -75,23 +81,136 @@ class OrchestratorAgent(BaseAgent):
 
         return assigned if assigned else ["ml_engineer"]
 
+    def _is_build_flow(self, message: str) -> bool:
+        msg = message.lower()
+        if any(k in msg for k in ("security", "audit", "scan", "owasp", "pentest")):
+            return False
+        if any(k in msg for k in ("github", "repo", "branch", "merge", "push")):
+            return False
+        return any(k in msg for k in BUILD_FLOW_KEYWORDS)
+
+    @staticmethod
+    def _has_issue_signal(text: str) -> bool:
+        t = text.lower()
+        return any(k in t for k in ("critical", "high", "blocked", "issue", "found", "vulnerability"))
+
+    @staticmethod
+    def _has_pass_signal(text: str) -> bool:
+        t = text.lower()
+        return any(k in t for k in ("approved", "pass", "clean", "no high", "no vulnerability"))
+
+    async def _dispatch_pipeline_phase(self, task: dict, task_id: str | None) -> None:
+        phase = task["phase"]
+        prompt = task["user_message"]
+
+        if phase == "data_review":
+            task["expected"] = {"data_scientist", "data_analyst"}
+            task["reported"] = set()
+            await self.message(
+                "data_scientist",
+                f"{prompt}\nStart with EDA and feature recommendations. Write reports first.",
+                task_id,
+            )
+            await self.message(
+                "data_analyst",
+                f"{prompt}\nValidate data quality/history and write monitoring report first.",
+                task_id,
+            )
+            await self.report(
+                "Workflow started: Data Scientist + Data Analyst first. ML Engineer waits for reports.",
+                task_id,
+            )
+            return
+
+        if phase == "ml_build":
+            task["expected"] = {"ml_engineer"}
+            task["reported"] = set()
+            await self.message(
+                "ml_engineer",
+                f"{prompt}\nUse Data Scientist + Data Analyst reports to build/update all project code now.",
+                task_id,
+            )
+            await self.report("Phase 2: ML Engineer building code based on DS/DA reports.", task_id)
+            return
+
+        if phase == "security_scan":
+            task["expected"] = {"sast"}
+            task["reported"] = set()
+            await self.message(
+                "sast",
+                "All code should now be written. Run full static scan on all generated code/files.",
+                task_id,
+            )
+            await self.report("Phase 3: SAST scanning all code.", task_id)
+            return
+
+        if phase == "ml_fix":
+            task["expected"] = {"ml_engineer"}
+            task["reported"] = set()
+            await self.message(
+                "ml_engineer",
+                "SAST reported threats. Update code to remove all security threats, then report back.",
+                task_id,
+            )
+            await self.report("Threats found. ML Engineer applying security fixes.", task_id)
+            return
+
     async def handle_task(self, payload: dict) -> str | None:
         content = payload.get("content", "")
         task_id = payload.get("task_id")
         from_agent = payload.get("from", "user")
 
-        # Ignore out-of-thread agent chatter so it does not re-route as user work.
         if from_agent != "user" and task_id not in self._active_tasks:
             return None
 
-        # Agent result path
         if from_agent != "user" and task_id in self._active_tasks:
             task = self._active_tasks[task_id]
-            task["results"].append({"from": from_agent, "content": content})
 
+            if task.get("flow") == "pipeline":
+                if from_agent in task["expected"]:
+                    task["reported"].add(from_agent)
+                    task["results"].append({"from": from_agent, "content": content})
+
+                phase = task["phase"]
+
+                if phase == "data_review" and task["expected"].issubset(task["reported"]):
+                    task["phase"] = "ml_build"
+                    await self._dispatch_pipeline_phase(task, task_id)
+                    return None
+
+                if phase == "ml_build" and "ml_engineer" in task["reported"]:
+                    task["phase"] = "security_scan"
+                    await self._dispatch_pipeline_phase(task, task_id)
+                    return None
+
+                if phase == "security_scan" and "sast" in task["reported"]:
+                    if self._has_issue_signal(content):
+                        task["phase"] = "ml_fix"
+                        await self._dispatch_pipeline_phase(task, task_id)
+                        return None
+                    if self._has_pass_signal(content):
+                        summary = self._summarise(task)
+                        await self.report(f"Task complete. {summary}", task_id)
+                        await self.message(
+                            "github",
+                            "All assigned agents completed. Perform repository sync: "
+                            "push main, push per-agent branches, then merge branches to main.",
+                            task_id,
+                        )
+                        del self._active_tasks[task_id]
+                        return None
+
+                if phase == "ml_fix" and "ml_engineer" in task["reported"]:
+                    task["phase"] = "security_scan"
+                    await self._dispatch_pipeline_phase(task, task_id)
+                    return None
+
+                return None
+
+            # Generic non-pipeline path
+            task["results"].append({"from": from_agent, "content": content})
             assigned = set(task["agents_assigned"])
             reported = {r["from"] for r in task["results"]}
-
             if assigned.issubset(reported):
                 summary = self._summarise(task)
                 del self._active_tasks[task_id]
@@ -104,10 +223,25 @@ class OrchestratorAgent(BaseAgent):
                 )
             return None
 
-        # New user instruction path
+        # New user instruction
+        if self._is_build_flow(content):
+            if task_id:
+                self._active_tasks[task_id] = {
+                    "flow": "pipeline",
+                    "phase": "data_review",
+                    "user_message": content,
+                    "agents_assigned": ["data_scientist", "data_analyst", "ml_engineer", "sast"],
+                    "expected": set(),
+                    "reported": set(),
+                    "results": [],
+                }
+                await self._dispatch_pipeline_phase(self._active_tasks[task_id], task_id)
+            return None
+
         agents = self.route(content)
         if task_id:
             self._active_tasks[task_id] = {
+                "flow": "generic",
                 "user_message": content,
                 "agents_assigned": agents,
                 "results": [],
@@ -121,11 +255,11 @@ class OrchestratorAgent(BaseAgent):
 
     def _summarise(self, task: dict) -> str:
         lines = []
-        for result in task["results"]:
+        for result in task.get("results", []):
             agent = result["from"].replace("_", " ").title()
             first_sentence = result["content"].split(".")[0]
             lines.append(f"{agent}: {first_sentence}")
-        return " | ".join(lines)
+        return " | ".join(lines) if lines else "No agent reports."
 
     def get_tools(self):
         return []

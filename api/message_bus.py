@@ -1,14 +1,13 @@
 """
-api/message_bus.py — Agent Message Bus
+api/message_bus.py - Agent Message Bus
 
-Fixes:
-  - p2p.monitor is now a COPY channel — it never delivers to agents
-  - All channels are clearly separated
-  - Singleton protection: bus is only created once
+Notes:
+- p2p.monitor is a GUI mirror channel, not an agent inbox
+- A single bus instance is used process-wide
 """
 import asyncio
-from datetime import datetime
 from collections import defaultdict
+from datetime import datetime
 from typing import Optional
 
 
@@ -24,13 +23,17 @@ class MockMessageBus:
 
     async def publish(self, channel: str, message: dict) -> None:
         envelope = {
-            "channel":   channel,
+            "channel": channel,
             "timestamp": datetime.utcnow().isoformat(),
-            "payload":   message,
+            "payload": message,
         }
         self._log.append(envelope)
-        preview = str(message.get("content", ""))[:60]
-        print(f"[BUS] {message.get('from','?')} → {message.get('to', channel)} | {preview}")
+
+        # p2p.monitor is a mirror copy; skipping it avoids duplicate-looking CLI logs.
+        if channel != "p2p.monitor":
+            preview = str(message.get("content", ""))[:60]
+            print(f"[BUS] {message.get('from', '?')} -> {message.get('to', channel)} | {preview}")
+
         for q in self._subscribers.get(channel, []):
             await q.put(envelope)
 
@@ -44,11 +47,8 @@ class MockMessageBus:
         self._log.clear()
 
 
-# ── Singleton — only ever one bus ─────────────────────────────────────────────
 bus = MockMessageBus()
 
-
-# ── Agent messaging helpers ───────────────────────────────────────────────────
 
 async def send_to_agent(
     from_agent: str,
@@ -57,18 +57,17 @@ async def send_to_agent(
     task_id: Optional[str] = None,
 ) -> None:
     """
-    Send a P2P message to a specific agent's inbox.
-    Also copies to p2p.monitor (GUI activity feed only — agents don't subscribe there).
+    Send a p2p message to an agent inbox and copy it to p2p.monitor for GUI activity feed.
     """
     msg = {
-        "from":    from_agent,
-        "to":      to_agent,
+        "from": from_agent,
+        "to": to_agent,
         "content": content,
         "task_id": task_id,
-        "type":    "p2p",
+        "type": "p2p",
     }
-    await bus.publish(f"agent.{to_agent}", msg)   # → agent's inbox
-    await bus.publish("p2p.monitor", msg)          # → GUI activity feed (read-only copy)
+    await bus.publish(f"agent.{to_agent}", msg)
+    await bus.publish("p2p.monitor", msg)
 
 
 async def broadcast(
@@ -76,13 +75,13 @@ async def broadcast(
     content: str,
     task_id: Optional[str] = None,
 ) -> None:
-    """Broadcast a result to the orchestrator inbox — shown in team chat."""
+    """Broadcast a result to orchestrator inbox (shown in team/user flow by server)."""
     await bus.publish("orchestrator.inbox", {
-        "from":    from_agent,
-        "to":      "orchestrator",
+        "from": from_agent,
+        "to": "orchestrator",
         "content": content,
         "task_id": task_id,
-        "type":    "broadcast",
+        "type": "broadcast",
     })
 
 
@@ -92,20 +91,20 @@ async def send_to_user(
     task_id: Optional[str] = None,
 ) -> None:
     await bus.publish("user.output", {
-        "from":    from_agent,
-        "to":      "user",
+        "from": from_agent,
+        "to": "user",
         "content": content,
         "task_id": task_id,
-        "type":    "user_message",
+        "type": "user_message",
     })
 
 
 async def publish_status(agent_id: str, status: str) -> None:
     await bus.publish("agent.status", {
         "agent_id": agent_id,
-        "status":   status,
-        "from":     agent_id,
-        "to":       "gui",
+        "status": status,
+        "from": agent_id,
+        "to": "gui",
     })
 
 
@@ -118,9 +117,9 @@ async def publish_file_event(
     await bus.publish("workspace.files", {
         "agent_id": agent_id,
         "filename": filename,
-        "path":     full_path,
-        "task_id":  task_id,
-        "from":     agent_id,
-        "to":       "gui",
-        "content":  f"File written: {filename}",
+        "path": full_path,
+        "task_id": task_id,
+        "from": agent_id,
+        "to": "gui",
+        "content": f"File written: {filename}",
     })

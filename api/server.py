@@ -10,6 +10,7 @@ import json
 import uuid
 from datetime import datetime
 from typing import Set
+import time
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,6 +30,7 @@ app.add_middleware(
 )
 
 connected_clients: Set[WebSocket] = set()
+_recent_user_messages: dict[tuple[str, str], float] = {}
 
 # ── Guard: listeners only ever start once ─────────────────────────────────────
 _listeners_started = False
@@ -222,6 +224,14 @@ async def websocket_endpoint(websocket: WebSocket):
 
             if not content:
                 continue
+
+            # Guard against accidental duplicate sends from multiple GUI WS connections.
+            dedup_key = (to, content)
+            now_ts = time.time()
+            last_ts = _recent_user_messages.get(dedup_key, 0.0)
+            if now_ts - last_ts < 1.2:
+                continue
+            _recent_user_messages[dedup_key] = now_ts
 
             target = "orchestrator" if to == "team" else to
             await send_to_agent(
