@@ -143,14 +143,6 @@ After assigned agents finish, orchestrator triggers `github` agent to:
 5. Push merged `main`.
 6. Write report: `github/sync_report.md` in workspace.
 
-## API Endpoints (Platform Backend)
-
-- `GET /health` - backend/project health
-- `GET /files` - list generated workspace files
-- `POST /predict` - model prediction (real model if available, fallback mock otherwise)
-- `GET /metrics` - metrics (real if available, fallback mock)
-- `WS /ws` - real-time GUI stream
-
 ## Common Issues
 
 - GUI connected but no real agent behavior:
