@@ -1,3 +1,4 @@
+Housing.csv
 # ─── Python ──────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
@@ -100,3 +101,7 @@ coverage.xml
 *.bak
 *.tmp
 *.temp
+
+
+catboost_info
+run_demo.py

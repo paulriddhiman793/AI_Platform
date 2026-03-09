@@ -1,47 +1,47 @@
-// agents.js — Agent definitions, scenarios, and direct response flows
+﻿// agents.js â€” Agent definitions, scenarios, and direct response flows
 // Each step can carry a `fileWrite` field:
 //   { agent: "ml_engineer", filename: "pipeline.py", content: "..." }
 // The frontend fires this to the backend which writes it to disk.
 
 export const AGENTS = {
   orchestrator: {
-    id: "orchestrator", name: "Orchestrator", shortName: "ORCH", icon: "🧠",
+    id: "orchestrator", name: "Orchestrator", shortName: "ORCH", icon: "OR",
     color: "#6366f1", bgColor: "#1e1b4b",
     role: "Routes tasks, coordinates the team, speaks to you",
     status: "idle",
   },
   ml_engineer: {
-    id: "ml_engineer", name: "ML Engineer", shortName: "ML", icon: "🤖",
+    id: "ml_engineer", name: "ML Engineer", shortName: "ML", icon: "ML",
     color: "#10b981", bgColor: "#022c22",
     role: "Builds, trains, deploys ML models. Self-healing debug loop.",
     status: "idle",
   },
   data_scientist: {
-    id: "data_scientist", name: "Data Scientist", shortName: "DS", icon: "📊",
+    id: "data_scientist", name: "Data Scientist", shortName: "DS", icon: "DS",
     color: "#3b82f6", bgColor: "#0c1a3a",
     role: "EDA, hypothesis testing, feature engineering, experiments.",
     status: "idle",
   },
   data_analyst: {
-    id: "data_analyst", name: "Data Analyst", shortName: "DA", icon: "📈",
+    id: "data_analyst", name: "Data Analyst", shortName: "DA", icon: "DA",
     color: "#f59e0b", bgColor: "#1c1000",
     role: "Business insights, dashboards, twice-daily health reports.",
     status: "idle",
   },
   frontend: {
-    id: "frontend", name: "Frontend Agent", shortName: "FE", icon: "💻",
+    id: "frontend", name: "Frontend Agent", shortName: "FE", icon: "FE",
     color: "#ec4899", bgColor: "#2d0a1a",
     role: "React components, API integration, UX, Playwright tests.",
     status: "idle",
   },
   sast: {
-    id: "sast", name: "SAST Agent", shortName: "SAST", icon: "🔒",
+    id: "sast", name: "SAST Agent", shortName: "SAST", icon: "SA",
     color: "#ef4444", bgColor: "#2d0a0a",
     role: "Static analysis, vulnerability scanning, security hardening.",
     status: "idle",
   },
   runtime_security: {
-    id: "runtime_security", name: "Runtime Security", shortName: "RT-SEC", icon: "🛡",
+    id: "runtime_security", name: "Runtime Security", shortName: "RT-SEC", icon: "RS",
     color: "#8b5cf6", bgColor: "#1a0a2d",
     role: "Live threat detection, pen testing, anomaly monitoring.",
     status: "idle",
@@ -54,14 +54,14 @@ export const AGENTS = {
   },
 };
 
-// ─── File content templates ───────────────────────────────────────────────────
+// â”€â”€â”€ File content templates â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const FILES = {
 
-  // ── ML Engineer files ───────────────────────────────────────────────────────
+  // â”€â”€ ML Engineer files â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   pipeline_v1: `"""
-pipeline.py — Churn Prediction Pipeline  [v1 — initial build]
+pipeline.py â€” Churn Prediction Pipeline  [v1 â€” initial build]
 Written by ML Engineer Agent
 """
 import os, pandas as pd, numpy as np
@@ -79,7 +79,7 @@ def load_data(path):
     return df
 
 def preprocess(df):
-    # v1: basic preprocessing — EDA recommendations not yet applied
+    # v1: basic preprocessing â€” EDA recommendations not yet applied
     X = df.drop("churn", axis=1)
     y = df["churn"]
     return train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
@@ -108,8 +108,8 @@ if __name__ == "__main__":
 `,
 
   pipeline_v2_eda: `"""
-pipeline.py — Churn Prediction Pipeline  [v2 — EDA recommendations applied]
-Written by ML Engineer Agent · Reviewed by Data Scientist
+pipeline.py â€” Churn Prediction Pipeline  [v2 â€” EDA recommendations applied]
+Written by ML Engineer Agent Â· Reviewed by Data Scientist
 Changes from v1:
   - Dropped: promo_clicks (41% nulls), referral_code, tenure (collinear)
   - Log-transformed: account_age, session_duration
@@ -172,8 +172,8 @@ if __name__ == "__main__":
 `,
 
   pipeline_v3_sast: `"""
-pipeline.py — Churn Prediction Pipeline  [v3 — SAST security fixes applied]
-Written by ML Engineer Agent · SAST approved
+pipeline.py â€” Churn Prediction Pipeline  [v3 â€” SAST security fixes applied]
+Written by ML Engineer Agent Â· SAST approved
 Changes from v2:
   - Replaced hardcoded DB_CONN with os.getenv('DB_CONN_STR')
   - Added os.path.abspath() path sanitization
@@ -237,7 +237,7 @@ if __name__ == "__main__":
 `,
 
   deploy_v1: `"""
-deploy.py — Model Deployment Script  [v1 — initial]
+deploy.py â€” Model Deployment Script  [v1 â€” initial]
 Written by ML Engineer Agent
 """
 import os, joblib, pandas as pd
@@ -261,8 +261,8 @@ if __name__ == "__main__":
 `,
 
   deploy_v2_sast: `"""
-deploy.py — Model Deployment Script  [v2 — SAST approved]
-Written by ML Engineer Agent · SAST approved ✅
+deploy.py â€” Model Deployment Script  [v2 â€” SAST approved]
+Written by ML Engineer Agent Â· SAST approved âœ…
 Changes from v1:
   - Path sanitization added (os.path.realpath)
   - Input validation added
@@ -297,22 +297,22 @@ if __name__ == "__main__":
 Generated by Data Scientist Agent
 
 ## Dataset Overview
-- Shape: 45,231 rows × 24 columns
+- Shape: 45,231 rows Ã— 24 columns
 - Target: \`churn\` (binary 0/1)
 
 ## Null Analysis
 | Feature        | Null Rate | Action              |
 |----------------|-----------|---------------------|
-| promo_clicks   | 41.2% ⚠  | DROP — broken source |
+| promo_clicks   | 41.2% âš   | DROP â€” broken source |
 | last_login     | 12.1%     | Impute median        |
 | referral_code  | 8.4%      | DROP                 |
 
 ## Skewness
-- account_age: 2.3 → log-transform recommended
-- session_duration: 1.8 → log-transform recommended
+- account_age: 2.3 â†’ log-transform recommended
+- session_duration: 1.8 â†’ log-transform recommended
 
 ## Multicollinearity
-- age ↔ tenure: r=0.91 → DROP tenure
+- age â†” tenure: r=0.91 â†’ DROP tenure
 
 ## Class Balance
 - Class 0 (no churn): 78%
@@ -322,11 +322,11 @@ Generated by Data Scientist Agent
 ## Recommendations Applied in pipeline.py v2
 `,
 
-  eda_report_updated: `# EDA Report  [v2 — updated after validation]
-Generated by Data Scientist Agent · Updated after model validation
+  eda_report_updated: `# EDA Report  [v2 â€” updated after validation]
+Generated by Data Scientist Agent Â· Updated after model validation
 
 ## Dataset Overview
-- Shape: 45,231 rows × 24 columns
+- Shape: 45,231 rows Ã— 24 columns
 
 ## Changes vs v1
 - Confirmed: new features session_duration and page_depth show strong signal
@@ -339,10 +339,10 @@ DROP:    promo_clicks, referral_code, tenure
 ENCODE:  region, device_type
 `,
 
-  sast_report_findings: `# SAST Scan Report — Initial Findings
+  sast_report_findings: `# SAST Scan Report â€” Initial Findings
 Generated by SAST Agent
 
-## Result: ⚠ ISSUES FOUND
+## Result: âš  ISSUES FOUND
 
 ### HIGH (1)
 - **File**: pipeline.py
@@ -355,18 +355,18 @@ Generated by SAST Agent
 - **Issue**: requests==2.28 has CVE-2023-32681
 - **Fix**: Upgrade to requests>=2.31.0
 
-⛔ Deployment blocked until HIGH is resolved.
+â›” Deployment blocked until HIGH is resolved.
 `,
 
-  sast_report_approved: `# SAST Re-Scan Report — APPROVED
+  sast_report_approved: `# SAST Re-Scan Report â€” APPROVED
 Generated by SAST Agent
 
-## Result: ✅ PASSED
+## Result: âœ… PASSED
 
 All previous findings resolved:
-- ✅ Hardcoded DB connection → replaced with os.getenv()
-- ✅ Path sanitization added with os.path.realpath()
-- ✅ requests upgraded to 2.31.0
+- âœ… Hardcoded DB connection â†’ replaced with os.getenv()
+- âœ… Path sanitization added with os.path.realpath()
+- âœ… requests upgraded to 2.31.0
 
 **Security score: 94/100**
 **Approved for deployment.**
@@ -375,22 +375,22 @@ All previous findings resolved:
   pentest_report: `# Runtime Pen Test Report
 Generated by Runtime Security Agent
 
-## Result: ✅ CLEAN
+## Result: âœ… CLEAN
 
 Endpoints tested: 14
-- ✅ Auth: all endpoints require valid token
-- ✅ SQL injection: no vectors found
-- ✅ XSS: no reflected or stored vectors
-- ✅ Rate limiting: 429 after 100 req/min
-- ✅ Path traversal: patched and confirmed fixed
-- ✅ /api/debug: disabled in prod
+- âœ… Auth: all endpoints require valid token
+- âœ… SQL injection: no vectors found
+- âœ… XSS: no reflected or stored vectors
+- âœ… Rate limiting: 429 after 100 req/min
+- âœ… Path traversal: patched and confirmed fixed
+- âœ… /api/debug: disabled in prod
 
 **Live system secure. Approved for production.**
 `,
 
   feature_engineering: `"""
-feature_engineering.py — Feature Engineering Pipeline
-Generated by Data Scientist Agent · Updated after EDA v2
+feature_engineering.py â€” Feature Engineering Pipeline
+Generated by Data Scientist Agent Â· Updated after EDA v2
 """
 import numpy as np
 import pandas as pd
@@ -412,7 +412,7 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     return df
 `,
 
-  requirements_v1: `# requirements.txt [v1 — initial]
+  requirements_v1: `# requirements.txt [v1 â€” initial]
 scikit-learn>=1.3.0
 pandas>=2.0.0
 numpy>=1.26.0
@@ -421,8 +421,8 @@ requests==2.28.0
 python-dotenv>=1.0.0
 `,
 
-  requirements_v2: `# requirements.txt [v2 — SAST CVE fix applied]
-# Changed: requests upgraded from 2.28.0 → 2.31.0 (CVE-2023-32681 fix)
+  requirements_v2: `# requirements.txt [v2 â€” SAST CVE fix applied]
+# Changed: requests upgraded from 2.28.0 â†’ 2.31.0 (CVE-2023-32681 fix)
 scikit-learn>=1.3.0
 pandas>=2.0.0
 numpy>=1.26.0
@@ -433,8 +433,8 @@ python-dotenv>=1.0.0
 
   // Project prediction API server (written by ML Engineer after SAST approval)
   api_server: `"""
-api_server.py — Project Prediction API
-Generated by ML Engineer Agent · SAST approved
+api_server.py â€” Project Prediction API
+Generated by ML Engineer Agent Â· SAST approved
 Run: uvicorn api_server:app --reload --port 5000
 """
 from fastapi import FastAPI, HTTPException
@@ -478,9 +478,9 @@ def metrics():
     }
 `,
 
-  // Project Dashboard — hits the PROJECT's prediction API on port 5000
-  dashboard_jsx_v1: `// Dashboard.jsx [v1 — initial build]
-// Project frontend — connects to backend at localhost:8000
+  // Project Dashboard â€” hits the PROJECT's prediction API on port 5000
+  dashboard_jsx_v1: `// Dashboard.jsx [v1 â€” initial build]
+// Project frontend â€” connects to backend at localhost:8000
 // Written by Frontend Agent
 import React, { useState, useEffect } from 'react';
 
@@ -514,7 +514,7 @@ export default function Dashboard() {
         <MetricCard label="Latency p95" value={\`\${metrics.latency_p95}ms\`} />
       </div>
       <button onClick={runPrediction}>Run Test Prediction</button>
-      {/* v1: using innerHTML — XSS risk flagged by SAST */}
+      {/* v1: using innerHTML â€” XSS risk flagged by SAST */}
       {prediction && <div dangerouslySetInnerHTML={{ __html: JSON.stringify(prediction) }} />}
     </div>
   );
@@ -530,9 +530,9 @@ function MetricCard({ label, value }) {
 }
 `,
 
-  dashboard_jsx_v2: `// Dashboard.jsx [v2 — SAST XSS fix applied]
-// Project frontend — connects to backend at localhost:8000
-// Written by Frontend Agent · SAST approved ✅
+  dashboard_jsx_v2: `// Dashboard.jsx [v2 â€” SAST XSS fix applied]
+// Project frontend â€” connects to backend at localhost:8000
+// Written by Frontend Agent Â· SAST approved âœ…
 import React, { useState, useEffect } from 'react';
 import DOMPurify from 'dompurify';
 
@@ -575,7 +575,7 @@ export default function Dashboard() {
         <MetricCard label="Volume"      value={String(metrics.inference_volume)} />
       </div>
       <button onClick={runPrediction}>Run Test Prediction</button>
-      {/* v2: DOMPurify — XSS fixed */}
+      {/* v2: DOMPurify â€” XSS fixed */}
       {prediction && (
         <div className="prediction-result">
           <strong>Prediction:</strong>
@@ -599,7 +599,7 @@ function MetricCard({ label, value }) {
 `,
 };
 
-// ─── TEAM SCENARIOS ───────────────────────────────────────────────────────────
+// â”€â”€â”€ TEAM SCENARIOS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export const SCENARIOS = {
   model: {
     keywords: ["model", "train", "churn", "ml", "predict", "classif", "accuracy", "logistic", "random"],
@@ -610,24 +610,24 @@ export const SCENARIOS = {
       { from: "ml_engineer",   type: "p2p",  delay: 2600,  to: "data_scientist", content: "Can you run EDA before I finalize the pipeline?" },
       { from: "data_scientist",type: "team", delay: 4200,  tag: "REPORT", content: "EDA complete. 3 features with >40% nulls. Skew on account_age. Writing eda_report.md.",
         fileWrite: { agent: "data_scientist", filename: "eda_report.md", content: FILES.eda_report } },
-      { from: "ml_engineer",   type: "team", delay: 5600,  tag: "STATUS", content: "Applying EDA recommendations. Updating pipeline.py → v2.",
+      { from: "ml_engineer",   type: "team", delay: 5600,  tag: "STATUS", content: "Applying EDA recommendations. Updating pipeline.py â†’ v2.",
         fileWrite: { agent: "ml_engineer", filename: "pipeline.py", content: FILES.pipeline_v2_eda } },
       { from: "ml_engineer",   type: "team", delay: 6200,  tag: "STATUS", content: "Training complete. Accuracy: 94.1%. Writing requirements.txt and sending to SAST.",
         fileWrite: { agent: "shared", filename: "requirements.txt", content: FILES.requirements_v1 } },
       { from: "ml_engineer",   type: "p2p",  delay: 6600,  to: "sast", content: "Sending pipeline.py for security scan." },
       { from: "sast",          type: "team", delay: 7800,  tag: "ALERT", content: "Found 1 HIGH: hardcoded DB string. 1 MEDIUM: requests CVE. Writing scan report.",
         fileWrite: { agent: "sast", filename: "scan_report.md", content: FILES.sast_report_findings } },
-      { from: "ml_engineer",   type: "team", delay: 8700,  tag: "STATUS", content: "Fixes applied. pipeline.py → v3 (path sanitized, env vars). requirements.txt → v2.",
+      { from: "ml_engineer",   type: "team", delay: 8700,  tag: "STATUS", content: "Fixes applied. pipeline.py â†’ v3 (path sanitized, env vars). requirements.txt â†’ v2.",
         fileWrite: { agent: "ml_engineer", filename: "pipeline.py", content: FILES.pipeline_v3_sast } },
-      { from: "ml_engineer",   type: "team", delay: 9000,  tag: "STATUS", content: "requirements.txt updated — CVE patched.",
+      { from: "ml_engineer",   type: "team", delay: 9000,  tag: "STATUS", content: "requirements.txt updated â€” CVE patched.",
         fileWrite: { agent: "shared", filename: "requirements.txt", content: FILES.requirements_v2 } },
-      { from: "sast",          type: "team", delay: 10000, tag: "REPORT", content: "Re-scan passed. ✅ All clear. Writing approval report.",
+      { from: "sast",          type: "team", delay: 10000, tag: "REPORT", content: "Re-scan passed. âœ… All clear. Writing approval report.",
         fileWrite: { agent: "sast", filename: "scan_report_approved.md", content: FILES.sast_report_approved } },
       { from: "ml_engineer",   type: "team", delay: 11000, tag: "STATUS", content: "Writing deploy.py and committing to GitHub.",
         fileWrite: { agent: "ml_engineer", filename: "deploy.py", content: FILES.deploy_v2_sast } },
-      { from: "ml_engineer",   type: "team", delay: 12000, tag: "REPORT", content: "CI passed ✅ Model deployed. Accuracy: 94.1%. All files written to workspace." },
+      { from: "ml_engineer",   type: "team", delay: 12000, tag: "REPORT", content: "CI passed âœ… Model deployed. Accuracy: 94.1%. All files written to workspace." },
       { from: "data_analyst",  type: "team", delay: 12800, tag: "REPORT", content: "Monitoring report updated. Next health check: 9PM." },
-      { from: "orchestrator",  type: "team", delay: 13600, tag: "DONE",   content: "✅ Task complete. Model trained, SAST-cleared, deployed. Check workspace for all files." },
+      { from: "orchestrator",  type: "team", delay: 13600, tag: "DONE",   content: "âœ… Task complete. Model trained, SAST-cleared, deployed. Check workspace for all files." },
     ],
   },
   security: {
@@ -637,7 +637,7 @@ export const SCENARIOS = {
       { from: "sast",             type: "team", delay: 3800, tag: "REPORT", content: "Static scan complete. 2 HIGH, 4 MEDIUM, 1 LOW. Writing report.",
         fileWrite: { agent: "sast", filename: "scan_report.md", content: FILES.sast_report_findings } },
       { from: "runtime_security", type: "team", delay: 5000, tag: "REPORT", content: "Dynamic scan complete. /api/debug still accessible in prod." },
-      { from: "runtime_security", type: "team", delay: 7300, tag: "ALERT",  content: "🔴 CRITICAL: Deserialization endpoint exploitable. Immediate patch required." },
+      { from: "runtime_security", type: "team", delay: 7300, tag: "ALERT",  content: "ðŸ”´ CRITICAL: Deserialization endpoint exploitable. Immediate patch required." },
       { from: "sast",             type: "team", delay: 8200, tag: "STATUS", content: "Patches applied. Re-scan approved.",
         fileWrite: { agent: "sast", filename: "scan_report_approved.md", content: FILES.sast_report_approved } },
       { from: "orchestrator",     type: "team", delay: 9000, tag: "DONE",   content: "Audit complete. Critical: 1 patched. All clear." },
@@ -652,35 +652,35 @@ export const SCENARIOS = {
       { from: "frontend",     type: "team", delay: 4200, tag: "STATUS", content: "Dashboard.jsx v1 written. Sending to SAST for XSS review.",
         fileWrite: { agent: "frontend", filename: "Dashboard.jsx", content: FILES.dashboard_jsx_v1 } },
       { from: "sast",         type: "team", delay: 6000, tag: "ALERT",  content: "XSS risk: dangerouslySetInnerHTML in Tooltip. Must switch to textContent." },
-      { from: "frontend",     type: "team", delay: 6900, tag: "STATUS", content: "Fixed. Dashboard.jsx → v2 with DOMPurify.",
+      { from: "frontend",     type: "team", delay: 6900, tag: "STATUS", content: "Fixed. Dashboard.jsx â†’ v2 with DOMPurify.",
         fileWrite: { agent: "frontend", filename: "Dashboard.jsx", content: FILES.dashboard_jsx_v2 } },
-      { from: "sast",         type: "team", delay: 7700, tag: "REPORT", content: "Re-scan passed. ✅ Approved.",
+      { from: "sast",         type: "team", delay: 7700, tag: "REPORT", content: "Re-scan passed. âœ… Approved.",
         fileWrite: { agent: "sast", filename: "scan_report_approved.md", content: FILES.sast_report_approved } },
       { from: "frontend",     type: "team", delay: 8800, tag: "REPORT", content: "Dashboard deployed. Lighthouse: 97/100." },
       { from: "frontend",     type: "team", delay: 9400, tag: "DONE",
-        content: "Project frontend is live.\n\n  🌐 http://localhost:5173\n\nOpen in your browser — it connects to the prediction API. Asking ML Engineer to verify the connection now...",
+        content: "Project frontend is live.\n\n  ðŸŒ http://localhost:5173\n\nOpen in your browser â€” it connects to the prediction API. Asking ML Engineer to verify the connection now...",
         fileWrite: { agent: "frontend", filename: "Dashboard.jsx", content: FILES.dashboard_jsx_v2 } },
       { from: "ml_engineer",  type: "team", delay: 10600, tag: "STATUS",
         content: "Checking project frontend <-> prediction API connectivity...\n  Frontend:       http://localhost:5173\n  Prediction API: http://localhost:8000" },
       { from: "ml_engineer",  type: "team", delay: 12400, tag: "REPORT",
         content: "Prediction API reachable at http://localhost:8000\n  GET  /health -> 200 OK\n    {status: \"ok\", model: \"model/model.joblib\", model_loaded: true}\n  Project frontend <-> Prediction API: CONNECTED" },
       { from: "ml_engineer",  type: "team", delay: 14200, tag: "REPORT",
-        content: "Live API test:\n  POST /predict  -> 200 OK\n    Request:  {account_age: 24, session_duration: 5.2}\n    Response: {prediction: true, probability: 0.8731}\n\n  GET  /metrics  -> 200 OK\n    {accuracy: 94.1, f1: 0.89, auc: 0.96}\n\nAll endpoints verified. Open the dashboard:\n  🌐 http://localhost:5173" },
+        content: "Live API test:\n  POST /predict  -> 200 OK\n    Request:  {account_age: 24, session_duration: 5.2}\n    Response: {prediction: true, probability: 0.8731}\n\n  GET  /metrics  -> 200 OK\n    {accuracy: 94.1, f1: 0.89, auc: 0.96}\n\nAll endpoints verified. Open the dashboard:\n  ðŸŒ http://localhost:5173" },
       { from: "orchestrator", type: "team", delay: 15200, tag: "DONE",
-        content: "✅ Project frontend live at http://localhost:5173 — prediction API connected and tested." },
+        content: "âœ… Project frontend live at http://localhost:5173 â€” prediction API connected and tested." },
     ],
   },
   eda: {
     keywords: ["eda", "data", "analysis", "dataset", "feature", "explore", "statistic"],
     flow: [
       { from: "orchestrator",   type: "team", delay: 700,  tag: "STATUS", content: "EDA task. Data Scientist + Data Analyst assigned." },
-      { from: "data_scientist", type: "team", delay: 2200, tag: "STATUS", content: "EDA in progress. Shape: 45k × 24 cols.",
+      { from: "data_scientist", type: "team", delay: 2200, tag: "STATUS", content: "EDA in progress. Shape: 45k Ã— 24 cols.",
         fileWrite: { agent: "data_scientist", filename: "feature_engineering.py", content: FILES.feature_engineering } },
       { from: "data_scientist", type: "p2p",  delay: 3300, to: "data_analyst", content: "Check historical logs for null rate trends." },
-      { from: "data_analyst",   type: "team", delay: 4600, tag: "REPORT", content: "promo_clicks null spike from 2% → 41% on Feb 8th. Tracking pixel broke." },
+      { from: "data_analyst",   type: "team", delay: 4600, tag: "REPORT", content: "promo_clicks null spike from 2% â†’ 41% on Feb 8th. Tracking pixel broke." },
       { from: "data_scientist", type: "team", delay: 6000, tag: "REPORT", content: "EDA complete. Writing eda_report.md.",
         fileWrite: { agent: "data_scientist", filename: "eda_report.md", content: FILES.eda_report } },
-      { from: "orchestrator",   type: "team", delay: 7000, tag: "DONE",   content: "📊 EDA complete. Data quality incident logged." },
+      { from: "orchestrator",   type: "team", delay: 7000, tag: "DONE",   content: "ðŸ“Š EDA complete. Data quality incident logged." },
     ],
   },
   default: {
@@ -692,9 +692,9 @@ export const SCENARIOS = {
   },
 };
 
-// ─── DIRECT RESPONSE FLOWS ────────────────────────────────────────────────────
-// steps[]     — messages in the private chat
-// spawnGroup  — auto-creates a group chat, runs groupFlow there
+// â”€â”€â”€ DIRECT RESPONSE FLOWS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// steps[]     â€” messages in the private chat
+// spawnGroup  â€” auto-creates a group chat, runs groupFlow there
 // Every step with fileWrite rewrites the file on disk (overwrites previous version)
 
 export const AGENT_DIRECT_RESPONSES = {
@@ -705,19 +705,19 @@ export const AGENT_DIRECT_RESPONSES = {
         { delay: 800,  tag: "STATUS", content: "On it. Pulling latest error logs from the sandbox." },
         { delay: 2200, tag: "STATUS", content: "Root cause: feature shape mismatch in preprocessing. Applying fix now.",
           fileWrite: { agent: "ml_engineer", filename: "pipeline.py", content: FILES.pipeline_v2_eda } },
-        { delay: 3800, tag: "REPORT", content: "Fix applied. pipeline.py updated ✍ All assertions pass. Need SAST review before I push — spawning security thread." },
+        { delay: 3800, tag: "REPORT", content: "Fix applied. pipeline.py updated âœ All assertions pass. Need SAST review before I push â€” spawning security thread." },
       ],
       spawnGroup: {
         members: ["ml_engineer", "sast"],
-        title: "Bug Fix · Security Review",
+        title: "Bug Fix Â· Security Review",
         reason: "ML Engineer needs SAST to review the fix before deployment.",
         groupFlow: [
-          { from: "ml_engineer", delay: 600,  tag: "STATUS", content: "SAST — fix is ready. Sending pipeline.py diff for review." },
+          { from: "ml_engineer", delay: 600,  tag: "STATUS", content: "SAST â€” fix is ready. Sending pipeline.py diff for review." },
           { from: "sast",        delay: 2200, tag: "REPORT", content: "Reviewed. Fix looks clean. One note: new file read on line 23 needs path sanitization. Writing findings.",
             fileWrite: { agent: "sast", filename: "scan_report.md", content: FILES.sast_report_findings } },
-          { from: "ml_engineer", delay: 3600, tag: "STATUS", content: "Good catch. Adding os.path.abspath(). Updating pipeline.py → v3.",
+          { from: "ml_engineer", delay: 3600, tag: "STATUS", content: "Good catch. Adding os.path.abspath(). Updating pipeline.py â†’ v3.",
             fileWrite: { agent: "ml_engineer", filename: "pipeline.py", content: FILES.pipeline_v3_sast } },
-          { from: "sast",        delay: 5000, tag: "REPORT", content: "Re-scan passed. ✅ No issues. pipeline.py approved. Updating approval report.",
+          { from: "sast",        delay: 5000, tag: "REPORT", content: "Re-scan passed. âœ… No issues. pipeline.py approved. Updating approval report.",
             fileWrite: { agent: "sast", filename: "scan_report_approved.md", content: FILES.sast_report_approved } },
           { from: "ml_engineer", delay: 6200, tag: "DONE",   content: "Fix committed to GitHub. CI started. deploy.py also updated.",
             fileWrite: { agent: "ml_engineer", filename: "deploy.py", content: FILES.deploy_v2_sast } },
@@ -729,19 +729,19 @@ export const AGENT_DIRECT_RESPONSES = {
       steps: [
         { delay: 800,  tag: "STATUS", content: "Starting retraining with updated feature set.",
           fileWrite: { agent: "ml_engineer", filename: "pipeline.py", content: FILES.pipeline_v2_eda } },
-        { delay: 2500, tag: "STATUS", content: "Training complete. New accuracy: 95.8% — up from 94.1%. Pulling in Data Scientist to validate." },
-        { delay: 3200, tag: "REPORT", content: "pipeline.py updated ✍ Spawning validation + approval thread." },
+        { delay: 2500, tag: "STATUS", content: "Training complete. New accuracy: 95.8% â€” up from 94.1%. Pulling in Data Scientist to validate." },
+        { delay: 3200, tag: "REPORT", content: "pipeline.py updated âœ Spawning validation + approval thread." },
       ],
       spawnGroup: {
         members: ["ml_engineer", "data_scientist", "sast"],
-        title: "Model Retrain · Validation",
+        title: "Model Retrain Â· Validation",
         reason: "Data Scientist validates the retrained model, SAST clears it for deploy.",
         groupFlow: [
-          { from: "ml_engineer",   delay: 600,  tag: "STATUS", content: "New model: 95.8% accuracy. Data Scientist — validate feature importances?" },
+          { from: "ml_engineer",   delay: 600,  tag: "STATUS", content: "New model: 95.8% accuracy. Data Scientist â€” validate feature importances?" },
           { from: "data_scientist",delay: 2400, tag: "REPORT", content: "Validation complete. Feature importances stable. +1.7% from quantile transform on account_age. Updating EDA report.",
             fileWrite: { agent: "data_scientist", filename: "eda_report.md", content: FILES.eda_report_updated } },
-          { from: "ml_engineer",   delay: 3800, tag: "STATUS", content: "SAST — sending updated deploy script for final review." },
-          { from: "sast",          delay: 5400, tag: "REPORT", content: "Scan clean. ✅ No vulnerabilities. Updating approval report.",
+          { from: "ml_engineer",   delay: 3800, tag: "STATUS", content: "SAST â€” sending updated deploy script for final review." },
+          { from: "sast",          delay: 5400, tag: "REPORT", content: "Scan clean. âœ… No vulnerabilities. Updating approval report.",
             fileWrite: { agent: "sast", filename: "scan_report_approved.md", content: FILES.sast_report_approved } },
           { from: "ml_engineer",   delay: 6600, tag: "DONE",   content: "New model deployed. MLflow entry logged. deploy.py updated.",
             fileWrite: { agent: "ml_engineer", filename: "deploy.py", content: FILES.deploy_v2_sast } },
@@ -757,21 +757,21 @@ export const AGENT_DIRECT_RESPONSES = {
       ],
       spawnGroup: {
         members: ["ml_engineer", "sast", "runtime_security"],
-        title: "Deployment · Security Sign-off",
+        title: "Deployment Â· Security Sign-off",
         reason: "SAST static scan + Runtime Security pen test required before production deploy.",
         groupFlow: [
-          { from: "ml_engineer",     delay: 600,  tag: "STATUS", content: "SAST — scan deploy.py. Runtime Security — pen test on staging after." },
-          { from: "sast",            delay: 2200, tag: "REPORT", content: "Static scan: 1 MEDIUM — requests CVE. Fix before deploy. Writing report.",
+          { from: "ml_engineer",     delay: 600,  tag: "STATUS", content: "SAST â€” scan deploy.py. Runtime Security â€” pen test on staging after." },
+          { from: "sast",            delay: 2200, tag: "REPORT", content: "Static scan: 1 MEDIUM â€” requests CVE. Fix before deploy. Writing report.",
             fileWrite: { agent: "sast", filename: "scan_report.md", content: FILES.sast_report_findings } },
-          { from: "ml_engineer",     delay: 3400, tag: "STATUS", content: "requests upgraded to 2.31.0. deploy.py → v2. requirements.txt updated.",
+          { from: "ml_engineer",     delay: 3400, tag: "STATUS", content: "requests upgraded to 2.31.0. deploy.py â†’ v2. requirements.txt updated.",
             fileWrite: { agent: "ml_engineer", filename: "deploy.py", content: FILES.deploy_v2_sast } },
-          { from: "ml_engineer",     delay: 3800, tag: "STATUS", content: "requirements.txt updated — CVE patched.",
+          { from: "ml_engineer",     delay: 3800, tag: "STATUS", content: "requirements.txt updated â€” CVE patched.",
             fileWrite: { agent: "shared", filename: "requirements.txt", content: FILES.requirements_v2 } },
-          { from: "sast",            delay: 5000, tag: "REPORT", content: "Re-scan passed. ✅ Writing approval.",
+          { from: "sast",            delay: 5000, tag: "REPORT", content: "Re-scan passed. âœ… Writing approval.",
             fileWrite: { agent: "sast", filename: "scan_report_approved.md", content: FILES.sast_report_approved } },
           { from: "runtime_security",delay: 6600, tag: "REPORT", content: "Pen test on staging complete. All clear. Writing pen test report.",
             fileWrite: { agent: "runtime_security", filename: "pentest_report.md", content: FILES.pentest_report } },
-          { from: "ml_engineer",     delay: 7800, tag: "DONE",   content: "Both approvals received. Deploying to production. 🚀" },
+          { from: "ml_engineer",     delay: 7800, tag: "DONE",   content: "Both approvals received. Deploying to production. ðŸš€" },
         ],
       },
     },
@@ -779,7 +779,7 @@ export const AGENT_DIRECT_RESPONSES = {
       match: [],
       steps: [
         { delay: 900,  tag: "STATUS", content: "Checking current pipeline state." },
-        { delay: 2200, tag: "REPORT", content: "Pipeline healthy. Last run: 9AM — passed. Model accuracy stable at 94.1%. No drift detected." },
+        { delay: 2200, tag: "REPORT", content: "Pipeline healthy. Last run: 9AM â€” passed. Model accuracy stable at 94.1%. No drift detected." },
       ],
     },
   ],
@@ -796,12 +796,12 @@ export const AGENT_DIRECT_RESPONSES = {
       ],
       spawnGroup: {
         members: ["data_scientist", "data_analyst", "ml_engineer"],
-        title: "EDA · Feature Review",
+        title: "EDA Â· Feature Review",
         reason: "Sharing EDA findings with Data Analyst and ML Engineer for joint review.",
         groupFlow: [
           { from: "data_scientist", delay: 700,  tag: "REPORT", content: "EDA results: session_duration and page_depth show highest signal. promo_clicks permanently broken. Updating eda_report.md.",
             fileWrite: { agent: "data_scientist", filename: "eda_report.md", content: FILES.eda_report_updated } },
-          { from: "data_analyst",   delay: 2200, tag: "REPORT", content: "Confirmed — promo_clicks null since Feb 8th. Safe to drop permanently." },
+          { from: "data_analyst",   delay: 2200, tag: "REPORT", content: "Confirmed â€” promo_clicks null since Feb 8th. Safe to drop permanently." },
           { from: "ml_engineer",    delay: 3600, tag: "STATUS", content: "Dropping promo_clicks. Adding session_duration + page_depth. Updating pipeline.py.",
             fileWrite: { agent: "ml_engineer", filename: "pipeline.py", content: FILES.pipeline_v2_eda } },
           { from: "data_scientist", delay: 5200, tag: "REPORT", content: "Retrained model validates well. Updating feature_engineering.py.",
@@ -814,7 +814,7 @@ export const AGENT_DIRECT_RESPONSES = {
       match: [],
       steps: [
         { delay: 900,  tag: "STATUS", content: "Reviewing experiment logs." },
-        { delay: 2400, tag: "REPORT", content: "Last experiment: A/B on feature transforms — Variant B won by +2.1%. Already promoted to main." },
+        { delay: 2400, tag: "REPORT", content: "Last experiment: A/B on feature transforms â€” Variant B won by +2.1%. Already promoted to main." },
       ],
     },
   ],
@@ -836,10 +836,10 @@ export const AGENT_DIRECT_RESPONSES = {
       ],
       spawnGroup: {
         members: ["data_analyst", "ml_engineer", "data_scientist"],
-        title: "Incident · Model Drift",
-        reason: "Data Analyst detected drift — ML Engineer + Data Scientist investigate and fix.",
+        title: "Incident Â· Model Drift",
+        reason: "Data Analyst detected drift â€” ML Engineer + Data Scientist investigate and fix.",
         groupFlow: [
-          { from: "data_analyst",   delay: 700,  tag: "ALERT",  content: "Accuracy: 94.1% → 90.9% since yesterday 6PM. age feature distribution shifted." },
+          { from: "data_analyst",   delay: 700,  tag: "ALERT",  content: "Accuracy: 94.1% â†’ 90.9% since yesterday 6PM. age feature distribution shifted." },
           { from: "data_scientist", delay: 2400, tag: "STATUS", content: "EDA on last 48h slice. Confirmed: new 18-22 cohort not in training data. Updating eda_report.md.",
             fileWrite: { agent: "data_scientist", filename: "eda_report.md", content: FILES.eda_report_updated } },
           { from: "ml_engineer",    delay: 4000, tag: "STATUS", content: "Retraining with updated distribution. Updating pipeline.py.",
@@ -863,7 +863,7 @@ export const AGENT_DIRECT_RESPONSES = {
       match: ["scan", "check", "review", "security", "vuln"],
       steps: [
         { delay: 800,  tag: "STATUS", content: "Initiating targeted scan." },
-        { delay: 2600, tag: "REPORT", content: "Scan complete. 0 critical, 0 high. 1 medium: numpy 1.23 CVE — upgrade to 1.26. Writing report.",
+        { delay: 2600, tag: "REPORT", content: "Scan complete. 0 critical, 0 high. 1 medium: numpy 1.23 CVE â€” upgrade to 1.26. Writing report.",
           fileWrite: { agent: "sast", filename: "scan_report.md", content: FILES.sast_report_findings } },
         { delay: 3800, tag: "DONE",   content: "Security score: 91/100. Patch staged." },
       ],
@@ -908,15 +908,15 @@ export const AGENT_DIRECT_RESPONSES = {
       ],
       spawnGroup: {
         members: ["runtime_security", "sast"],
-        title: "Pen Test · Cross-Reference",
+        title: "Pen Test Â· Cross-Reference",
         reason: "Cross-referencing live pen test results with SAST static findings.",
         groupFlow: [
           { from: "runtime_security", delay: 700,  tag: "REPORT", content: "1 medium: /api/users leaks internal IDs in error responses. Sharing with SAST." },
-          { from: "sast",             delay: 2200, tag: "REPORT", content: "Confirmed statically — error handler in api/users.py:156 returns full user object. Writing patch.",
+          { from: "sast",             delay: 2200, tag: "REPORT", content: "Confirmed statically â€” error handler in api/users.py:156 returns full user object. Writing patch.",
             fileWrite: { agent: "sast", filename: "scan_report.md", content: FILES.sast_report_findings } },
           { from: "sast",             delay: 3800, tag: "STATUS", content: "Patch applied. Error responses now generic. Updating approval.",
             fileWrite: { agent: "sast", filename: "scan_report_approved.md", content: FILES.sast_report_approved } },
-          { from: "runtime_security", delay: 5200, tag: "REPORT", content: "Verified — leak patched. Writing final pen test report.",
+          { from: "runtime_security", delay: 5200, tag: "REPORT", content: "Verified â€” leak patched. Writing final pen test report.",
             fileWrite: { agent: "runtime_security", filename: "pentest_report.md", content: FILES.pentest_report } },
           { from: "runtime_security", delay: 6200, tag: "DONE",   content: "Cross-reference complete. All findings resolved." },
         ],
@@ -925,7 +925,7 @@ export const AGENT_DIRECT_RESPONSES = {
     {
       match: [],
       steps: [
-        { delay: 900,  tag: "REPORT", content: "Live system nominal. Falco: 0 alerts last 24h. Last pen test: 2 days ago — clean." },
+        { delay: 900,  tag: "REPORT", content: "Live system nominal. Falco: 0 alerts last 24h. Last pen test: 2 days ago â€” clean." },
       ],
     },
   ],
@@ -936,20 +936,20 @@ export const AGENT_DIRECT_RESPONSES = {
       steps: [
         { delay: 800,  tag: "STATUS", content: "Running Playwright to reproduce." },
         { delay: 2400, tag: "STATUS", content: "Reproduced. CSS grid overflow on mobile. Fixing now." },
-        { delay: 3800, tag: "REPORT", content: "Fix applied. Dashboard.jsx → v1 updated. Sending to SAST.",
+        { delay: 3800, tag: "REPORT", content: "Fix applied. Dashboard.jsx â†’ v1 updated. Sending to SAST.",
           fileWrite: { agent: "frontend", filename: "Dashboard.jsx", content: FILES.dashboard_jsx_v1 } },
       ],
       spawnGroup: {
         members: ["frontend", "sast"],
-        title: "UI Fix · Security Review",
+        title: "UI Fix Â· Security Review",
         reason: "Frontend needs SAST to sign off before deploying the component fix.",
         groupFlow: [
-          { from: "frontend", delay: 600,  tag: "STATUS", content: "SAST — diff ready. Grid fix + tooltip refactor. Please review both." },
+          { from: "frontend", delay: 600,  tag: "STATUS", content: "SAST â€” diff ready. Grid fix + tooltip refactor. Please review both." },
           { from: "sast",     delay: 2400, tag: "REPORT", content: "Grid fix clean. Tooltip: dangerouslySetInnerHTML XSS risk. Fix before deploy. Writing report.",
             fileWrite: { agent: "sast", filename: "scan_report.md", content: FILES.sast_report_findings } },
-          { from: "frontend", delay: 3600, tag: "STATUS", content: "Replacing dangerouslySetInnerHTML with DOMPurify. Dashboard.jsx → v2.",
+          { from: "frontend", delay: 3600, tag: "STATUS", content: "Replacing dangerouslySetInnerHTML with DOMPurify. Dashboard.jsx â†’ v2.",
             fileWrite: { agent: "frontend", filename: "Dashboard.jsx", content: FILES.dashboard_jsx_v2 } },
-          { from: "sast",     delay: 5000, tag: "REPORT", content: "Re-reviewed. ✅ XSS resolved. Both changes approved. Updating approval.",
+          { from: "sast",     delay: 5000, tag: "REPORT", content: "Re-reviewed. âœ… XSS resolved. Both changes approved. Updating approval.",
             fileWrite: { agent: "sast", filename: "scan_report_approved.md", content: FILES.sast_report_approved } },
           { from: "frontend", delay: 6000, tag: "DONE",   content: "Deployed. Lighthouse: 97/100. Grid and tooltip issues resolved." },
         ],
@@ -967,20 +967,20 @@ export const AGENT_DIRECT_RESPONSES = {
         title: "Dashboard Build",
         reason: "Frontend needs metrics from Data Analyst and security review from SAST.",
         groupFlow: [
-          { from: "frontend",    delay: 600,  tag: "STATUS", content: "Data Analyst — which metrics? I'm thinking accuracy, drift, latency, volume." },
+          { from: "frontend",    delay: 600,  tag: "STATUS", content: "Data Analyst â€” which metrics? I'm thinking accuracy, drift, latency, volume." },
           { from: "data_analyst",delay: 1800, tag: "REPORT", content: "Add: data freshness indicator + p95 latency (not just p50). All 6 metrics confirmed." },
-          { from: "frontend",    delay: 3200, tag: "STATUS", content: "All 6 metrics wired up. Dashboard.jsx → v2. Sending to SAST.",
+          { from: "frontend",    delay: 3200, tag: "STATUS", content: "All 6 metrics wired up. Dashboard.jsx â†’ v2. Sending to SAST.",
             fileWrite: { agent: "frontend", filename: "Dashboard.jsx", content: FILES.dashboard_jsx_v2 } },
-          { from: "sast",        delay: 5000, tag: "REPORT", content: "Reviewed. ✅ Clean — no XSS or injection risks. Writing approval.",
+          { from: "sast",        delay: 5000, tag: "REPORT", content: "Reviewed. âœ… Clean â€” no XSS or injection risks. Writing approval.",
             fileWrite: { agent: "sast", filename: "scan_report_approved.md", content: FILES.sast_report_approved } },
           { from: "frontend",    delay: 6000, tag: "DONE",
-            content: "Project dashboard deployed. Lighthouse: 98/100.\n\n  🌐 http://localhost:5173\n\nConnects to backend API at localhost:8000. Asking ML Engineer to verify now..." },
+            content: "Project dashboard deployed. Lighthouse: 98/100.\n\n  ðŸŒ http://localhost:5173\n\nConnects to backend API at localhost:8000. Asking ML Engineer to verify now..." },
           { from: "ml_engineer",  delay: 7800, tag: "STATUS",
             content: "Checking project frontend <-> prediction API connectivity...\n  Frontend:       http://localhost:5173\n  Prediction API: http://localhost:8000" },
           { from: "ml_engineer",  delay: 10000, tag: "REPORT",
             content: "Prediction API reachable at http://localhost:8000\n  GET  /health -> 200 OK\n    {status: \"ok\", model: \"model/model.joblib\", model_loaded: true}\n  Project frontend <-> Prediction API: CONNECTED" },
           { from: "ml_engineer",  delay: 11600, tag: "REPORT",
-            content: "Live API test:\n  POST /predict  -> 200 OK\n    Request:  {account_age: 24, session_duration: 5.2}\n    Response: {prediction: true, probability: 0.8731}\n\n  GET  /metrics  -> 200 OK\n    {accuracy: 94.1, f1: 0.89}\n\nDashboard live at: 🌐 http://localhost:5173" },
+            content: "Live API test:\n  POST /predict  -> 200 OK\n    Request:  {account_age: 24, session_duration: 5.2}\n    Response: {prediction: true, probability: 0.8731}\n\n  GET  /metrics  -> 200 OK\n    {accuracy: 94.1, f1: 0.89}\n\nDashboard live at: ðŸŒ http://localhost:5173" },
         ],
       },
     },
@@ -1003,7 +1003,7 @@ export const AGENT_DIRECT_RESPONSES = {
   ],
 };
 
-// ─── Exports ──────────────────────────────────────────────────────────────────
+// â”€â”€â”€ Exports â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export function detectScenario(userMessage) {
   const msg = userMessage.toLowerCase();
@@ -1027,3 +1027,4 @@ export function detectDirectResponse(agentId, userMessage) {
   const last = responses[responses.length - 1];
   return { steps: last.steps, spawnGroup: last.spawnGroup || null };
 }
+

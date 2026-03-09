@@ -1,0 +1,5 @@
+{
+  "chunks": 1,
+  "dims": 768,
+  "has_faiss": false
+}

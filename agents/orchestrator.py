@@ -2,6 +2,7 @@
 orchestrator.py - Supervisor orchestrator agent
 """
 from agents.base_agent import BaseAgent
+from tools.workspace import workspace
 
 
 ROUTING_TABLE = {
@@ -16,6 +17,8 @@ ROUTING_TABLE = {
     "retrain": ["ml_engineer", "data_scientist"],
 
     # Data work
+    "analyse": ["data_scientist", "data_analyst"],
+    "analyze": ["data_scientist", "data_analyst"],
     "eda": ["data_scientist"],
     "analysis": ["data_scientist", "data_analyst"],
     "dataset": ["data_scientist"],
@@ -127,32 +130,10 @@ class OrchestratorAgent(BaseAgent):
             task["reported"] = set()
             await self.message(
                 "ml_engineer",
-                f"{prompt}\nUse Data Scientist + Data Analyst reports to build/update all project code now.",
+                f"{prompt}\nRun transparency_quick_probe.py and return output.",
                 task_id,
             )
-            await self.report("Phase 2: ML Engineer building code based on DS/DA reports.", task_id)
-            return
-
-        if phase == "security_scan":
-            task["expected"] = {"sast"}
-            task["reported"] = set()
-            await self.message(
-                "sast",
-                "All code should now be written. Run full static scan on all generated code/files.",
-                task_id,
-            )
-            await self.report("Phase 3: SAST scanning all code.", task_id)
-            return
-
-        if phase == "ml_fix":
-            task["expected"] = {"ml_engineer"}
-            task["reported"] = set()
-            await self.message(
-                "ml_engineer",
-                "SAST reported threats. Update code to remove all security threats, then report back.",
-                task_id,
-            )
-            await self.report("Threats found. ML Engineer applying security fixes.", task_id)
+            await self.report("Phase 2: ML Engineer running transparency quick probe.", task_id)
             return
 
     async def handle_task(self, payload: dict) -> str | None:
@@ -179,30 +160,9 @@ class OrchestratorAgent(BaseAgent):
                     return None
 
                 if phase == "ml_build" and "ml_engineer" in task["reported"]:
-                    task["phase"] = "security_scan"
-                    await self._dispatch_pipeline_phase(task, task_id)
-                    return None
-
-                if phase == "security_scan" and "sast" in task["reported"]:
-                    if self._has_issue_signal(content):
-                        task["phase"] = "ml_fix"
-                        await self._dispatch_pipeline_phase(task, task_id)
-                        return None
-                    if self._has_pass_signal(content):
-                        summary = self._summarise(task)
-                        await self.report(f"Task complete. {summary}", task_id)
-                        await self.message(
-                            "github",
-                            "All assigned agents completed. Perform repository sync: "
-                            "push main, push per-agent branches, then merge branches to main.",
-                            task_id,
-                        )
-                        del self._active_tasks[task_id]
-                        return None
-
-                if phase == "ml_fix" and "ml_engineer" in task["reported"]:
-                    task["phase"] = "security_scan"
-                    await self._dispatch_pipeline_phase(task, task_id)
+                    summary = self._summarise(task)
+                    await self.report(f"Task complete. {summary}", task_id)
+                    del self._active_tasks[task_id]
                     return None
 
                 return None
@@ -226,16 +186,30 @@ class OrchestratorAgent(BaseAgent):
         # New user instruction
         if self._is_build_flow(content):
             if task_id:
+                await self.report("Hidden PowerShell runner started (team chat model request).", task_id)
+                probe = await self.run_model_transparency_probe(task_id=task_id)
+                full_out = probe.get("output", "") or "[no output]"
+                txt_name = "transparency_quick_probe_output.txt"
+                if workspace.is_initialized:
+                    workspace.write("shared", txt_name, full_out, task_id)
+
                 self._active_tasks[task_id] = {
-                    "flow": "pipeline",
-                    "phase": "data_review",
+                    "flow": "generic",
                     "user_message": content,
-                    "agents_assigned": ["data_scientist", "data_analyst", "ml_engineer", "sast"],
-                    "expected": set(),
-                    "reported": set(),
+                    "agents_assigned": ["data_scientist", "data_analyst", "ml_engineer"],
                     "results": [],
                 }
-                await self._dispatch_pipeline_phase(self._active_tasks[task_id], task_id)
+                await self.report(
+                    f"PowerShell runner finished.\n"
+                    f"success={probe.get('success')} | script={probe.get('script')}\n"
+                    f"Saved: shared/{txt_name}\n"
+                    "Forwarding exact output to Data Scientist, Data Analyst, ML Engineer.",
+                    task_id,
+                )
+                forwarded = f"__PROBE_OUTPUT_BEGIN__\n{full_out}"
+                await self.message("data_scientist", forwarded, task_id)
+                await self.message("data_analyst", forwarded, task_id)
+                await self.message("ml_engineer", forwarded, task_id)
             return None
 
         agents = self.route(content)

@@ -71,6 +71,16 @@ class WorkspaceManager:
 
         return file_path
 
+    def write_bytes(self, agent_id: str, filename: str, data: bytes,
+                    task_id: str = None) -> Path:
+        self._check_initialized()
+        file_path = self._resolve(agent_id, filename)
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_bytes(data)
+        print(f"[WORKSPACE] binary write {agent_id}/{filename} ({len(data)} bytes)")
+        self._fire_file_event(agent_id, filename, str(file_path), task_id)
+        return file_path
+
     def read(self, agent_id: str, filename: str) -> str:
         self._check_initialized()
         file_path = self._resolve(agent_id, filename)

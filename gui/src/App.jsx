@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+﻿import { useState, useEffect, useRef, useCallback } from "react";
 import { AGENTS, detectScenario, detectDirectResponse } from "./data/agents.js";
 
-// ─── Config ───────────────────────────────────────────────────────────────────
+// â”€â”€â”€ Config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const WS_URL = "ws://localhost:8000/ws";
 
 let _id = 0;
@@ -15,13 +15,13 @@ const TAG = {
   DONE:   { bg: "#16113a", color: "#a78bfa", border: "#302060" },
 };
 
-// ─── UI Components ────────────────────────────────────────────────────────────
+// â”€â”€â”€ UI Components â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function Avatar({ agentId, size = 32 }) {
   const a = AGENTS[agentId];
   const isUser = agentId === "user";
   return (
     <div style={{ width: size, height: size, borderRadius: "50%", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: Math.floor(size * 0.44), background: isUser ? "#14122e" : (a?.bgColor || "#111"), border: `2px solid ${isUser ? "#6366f1" : (a?.color || "#333")}` }}>
-      {isUser ? "👤" : a?.icon}
+      {isUser ? "U" : a?.icon}
     </div>
   );
 }
@@ -100,10 +100,10 @@ function FileCard({ entry }) {
   return (
     <div style={{ padding: "10px 12px", borderRadius: 8, background: isUpdate ? "#060a10" : "#060f06", border: `1px solid ${isUpdate ? "#1a2a3a" : "#1a3a1a"}`, marginBottom: 6, animation: "mIn .22s ease-out" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-        <span style={{ fontSize: 13 }}>{isUpdate ? "✏️" : "📄"}</span>
+        <span style={{ fontSize: 11 }}>{isUpdate ? "EDIT" : "FILE"}</span>
         <span style={{ fontSize: 10, color: a?.color || "#4ade80", fontWeight: 700 }}>{entry.agent_id}</span>
         {isUpdate && (
-          <span style={{ fontSize: 9, color: "#60a5fa", background: "#0a1628", border: "1px solid #1a3060", padding: "1px 6px", borderRadius: 4 }}>v{entry.version} — overwritten</span>
+          <span style={{ fontSize: 9, color: "#60a5fa", background: "#0a1628", border: "1px solid #1a3060", padding: "1px 6px", borderRadius: 4 }}>v{entry.version} overwritten</span>
         )}
         <span style={{ fontSize: 9, color: "#252525", marginLeft: "auto" }}>{fmt(entry.timestamp)}</span>
       </div>
@@ -118,12 +118,12 @@ function FileCard({ entry }) {
 function ConnBadge({ status, project }) {
   const cfg = {
     connected:    { color: "#4ade80", bg: "#0a2a0a", border: "#1a4a1a", label: "Live" },
-    connecting:   { color: "#facc15", bg: "#1a1400", border: "#3a3000", label: "Connecting…" },
-    disconnected: { color: "#f87171", bg: "#2a0a0a", border: "#4a1a1a", label: "Offline — mock mode" },
+    connecting:   { color: "#facc15", bg: "#1a1400", border: "#3a3000", label: "Connecting..." },
+    disconnected: { color: "#f87171", bg: "#2a0a0a", border: "#4a1a1a", label: "Offline - mock mode" },
   }[status] || {};
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-      {project && <div style={{ fontSize: 10, color: "#383838", background: "#0a0a0a", border: "1px solid #181818", padding: "3px 8px", borderRadius: 20 }}>📁 {project}</div>}
+      {project && <div style={{ fontSize: 10, color: "#383838", background: "#0a0a0a", border: "1px solid #181818", padding: "3px 8px", borderRadius: 20 }}>DIR {project}</div>}
       <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10, color: cfg.color, background: cfg.bg, border: `1px solid ${cfg.border}`, padding: "3px 8px", borderRadius: 20 }}>
         <span style={{ width: 5, height: 5, borderRadius: "50%", background: cfg.color, display: "inline-block", animation: status === "connecting" ? "sPulse 1s infinite" : "none" }} />
         {cfg.label}
@@ -140,7 +140,7 @@ function Sidebar({ agents, activeChat, onSelectChat, chatList }) {
         <span style={{ fontSize: 9, color: "#3a3a3a", fontWeight: 700, letterSpacing: ".12em" }}>CHATS</span>
       </div>
       <div style={{ padding: "8px 8px 2px" }}>
-        <SidebarBtn id="team" isActive={activeChat === "team"} icon="🤝" iconBg="#12103a" iconBorder="#6366f1" color="#a5b4fc" name="Team" sub="All agent reports" unread={chatList.find(c=>c.id==="team")?.unread||0} onClick={() => onSelectChat("team")} />
+        <SidebarBtn id="team" isActive={activeChat === "team"} icon="TEAM" iconBg="#12103a" iconBorder="#6366f1" color="#a5b4fc" name="Team" sub="All agent reports" unread={chatList.find(c=>c.id==="team")?.unread||0} onClick={() => onSelectChat("team")} />
       </div>
       <div style={{ padding: "8px 12px 4px" }}>
         <span style={{ fontSize: 9, color: "#252525", letterSpacing: ".1em" }}>DIRECT</span>
@@ -161,7 +161,7 @@ function Sidebar({ agents, activeChat, onSelectChat, chatList }) {
           <div style={{ padding: "0 8px 8px", display: "flex", flexDirection: "column", gap: 1, flex: 1, overflowY: "auto" }}>
             {groupChats.map(g => (
               <SidebarBtn key={g.id} id={g.id} isActive={activeChat === g.id}
-                icon="👥" iconBg="#1a1a2e" iconBorder="#6366f1" color="#a78bfa"
+                icon="GRP" iconBg="#1a1a2e" iconBorder="#6366f1" color="#a78bfa"
                 name={g.title} sub={g.members.map(m => AGENTS[m]?.icon).join(" ")}
                 unread={g.unread||0} onClick={() => onSelectChat(g.id)} isNew={g.isNew} />
             ))}
@@ -173,10 +173,12 @@ function Sidebar({ agents, activeChat, onSelectChat, chatList }) {
 }
 
 function SidebarBtn({ isActive, icon, iconBg, iconBorder, color, name, sub, unread, onClick, isNew }) {
+  const iconText = String(icon || "");
+  const iconSize = iconText.length >= 4 ? 9 : iconText.length === 3 ? 10 : 14;
   return (
     <button onClick={onClick} style={{ width: "100%", padding: "8px 9px", borderRadius: 8, cursor: "pointer", display: "flex", alignItems: "center", gap: 9, marginBottom: 1, background: isActive ? iconBg + "cc" : "transparent", border: `1px solid ${isActive ? iconBorder + "aa" : "transparent"}`, transition: "all .15s" }}>
       <div style={{ position: "relative", flexShrink: 0 }}>
-        <div style={{ width: 34, height: 34, borderRadius: "50%", background: iconBg, border: `2px solid ${iconBorder}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16 }}>{icon}</div>
+        <div style={{ width: 34, height: 34, borderRadius: "50%", background: iconBg, border: `2px solid ${iconBorder}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: iconSize, fontWeight: 700 }}>{icon}</div>
         {unread > 0 && <span style={{ position: "absolute", top: -2, right: -2, width: 14, height: 14, borderRadius: "50%", background: "#ef4444", border: "2px solid #050505", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 7, color: "#fff", fontWeight: 700 }}>{unread}</span>}
         {isNew && !unread && <span style={{ position: "absolute", top: -2, right: -2, width: 10, height: 10, borderRadius: "50%", background: "#4ade80", border: "2px solid #050505", animation: "sPulse 1.5s infinite" }} />}
       </div>
@@ -193,7 +195,7 @@ function ChatHeader({ chat, agents }) {
   if (!chat) return null;
   if (chat.id === "team") return (
     <div style={{ ...S.chatHdr, background: "#070707", borderBottom: "1px solid #111" }}>
-      <div style={{ width: 34, height: 34, borderRadius: "50%", background: "#12103a", border: "2px solid #6366f1", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 17 }}>🤝</div>
+      <div style={{ width: 34, height: 34, borderRadius: "50%", background: "#12103a", border: "2px solid #6366f1", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700 }}>TEAM</div>
       <div>
         <div style={{ fontSize: 13, fontWeight: 700, color: "#a5b4fc" }}>Team Chat</div>
         <div style={{ fontSize: 10, color: "#383838" }}>All agent reports stream here in real time</div>
@@ -204,7 +206,7 @@ function ChatHeader({ chat, agents }) {
     const memberAgents = chat.members.map(m => AGENTS[m]).filter(Boolean);
     return (
       <div style={{ ...S.chatHdr, background: "#0a091f", borderBottom: "1px solid #6366f122" }}>
-        <div style={{ width: 34, height: 34, borderRadius: "50%", background: "#1a1a3a", border: "2px solid #6366f1", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16 }}>👥</div>
+        <div style={{ width: 34, height: 34, borderRadius: "50%", background: "#1a1a3a", border: "2px solid #6366f1", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700 }}>GRP</div>
         <div style={{ flex: 1 }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: "#a78bfa" }}>{chat.title}</div>
           <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2 }}>
@@ -242,14 +244,14 @@ function RightPanel({ p2pLog, fileLog, projectRoot }) {
       <div style={{ flex: 1, overflowY: "auto", padding: "8px 10px" }}>
         {tab === "p2p" && (
           <>
-            {!p2pLog.length && <div style={{ color: "#1e1e1e", fontSize: 11, textAlign: "center", marginTop: 20 }}>Agent-to-agent messages appear here…</div>}
+            {!p2pLog.length && <div style={{ color: "#1e1e1e", fontSize: 11, textAlign: "center", marginTop: 20 }}>Agent-to-agent messages appear here...</div>}
             {p2pLog.map(e => <ActivityCard key={e.id} entry={e} />)}
           </>
         )}
         {tab === "files" && (
           <>
-            {projectRoot && <div style={{ padding: "8px 10px", marginBottom: 8, borderRadius: 6, background: "#060f06", border: "1px solid #1a3a1a", fontSize: 10, color: "#2a4a2a", fontFamily: "monospace", wordBreak: "break-all" }}>📁 {projectRoot}</div>}
-            {!fileLog.length && <div style={{ color: "#1e1e1e", fontSize: 11, textAlign: "center", marginTop: 20 }}>Files written by agents appear here…</div>}
+            {projectRoot && <div style={{ padding: "8px 10px", marginBottom: 8, borderRadius: 6, background: "#060f06", border: "1px solid #1a3a1a", fontSize: 10, color: "#2a4a2a", fontFamily: "monospace", wordBreak: "break-all" }}>DIR {projectRoot}</div>}
+            {!fileLog.length && <div style={{ color: "#1e1e1e", fontSize: 11, textAlign: "center", marginTop: 20 }}>Files written by agents appear here...</div>}
             {fileLog.map(e => <FileCard key={e.id} entry={e} />)}
           </>
         )}
@@ -258,14 +260,14 @@ function RightPanel({ p2pLog, fileLog, projectRoot }) {
   );
 }
 
-// ─── Main App ─────────────────────────────────────────────────────────────────
+// â”€â”€â”€ Main App â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export default function App() {
   const [agents, setAgents] = useState(() =>
     Object.fromEntries(Object.entries(AGENTS).map(([k,v]) => [k, { ...v }]))
   );
   const [chatList, setChatList] = useState(() => {
     const list = [
-      { id: "team", type: "team", messages: [{ id: uid(), from: "orchestrator", tag: "STATUS", content: "AI Engineering Platform online. All agents standing by.\n\nBackend running → messages go to real Python agents.\nBackend offline → full mock mode with simulated responses.", timestamp: Date.now() }], unread: 0 },
+      { id: "team", type: "team", messages: [{ id: uid(), from: "orchestrator", tag: "STATUS", content: "AI Engineering Platform online. All agents standing by.\n\nBackend running -> messages go to real Python agents.\nBackend offline -> full mock mode with simulated responses.", timestamp: Date.now() }], unread: 0 },
     ];
     for (const a of Object.values(AGENTS)) {
       list.push({ id: a.id, type: "direct", messages: [{ id: uid(), from: a.id, tag: "STATUS", content: `Hi, I'm ${a.name}. ${a.role}\n\nGive me a direct instruction. If I need another agent, a group thread auto-spawns.`, timestamp: Date.now() }], unread: 0 });
@@ -282,8 +284,10 @@ export default function App() {
   const [projectRoot, setProjectRoot]   = useState(null);
   const [p2pLog, setP2pLog]             = useState([]);
   const [fileLog, setFileLog]           = useState([]);
+  const [uploading, setUploading]       = useState(false);
 
   const wsRef         = useRef(null);
+  const uploadRef     = useRef(null);
   const timers        = useRef([]);
   const msgsEndRef    = useRef({});
   const reconnTimer   = useRef(null);
@@ -338,7 +342,7 @@ export default function App() {
     setChatList(prev => prev.map(c => c.id === activeChat ? { ...c, unread: 0, isNew: false } : c));
   }, [activeChat]);
 
-  // ── WebSocket ─────────────────────────────────────────────────────────────
+  // â”€â”€ WebSocket â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const connectWS = useCallback(() => {
     setConnStatus("connecting");
     try {
@@ -361,7 +365,7 @@ export default function App() {
     return () => { clearTimeout(reconnTimer.current); wsRef.current?.close(); };
   }, [connectWS]);
 
-  // ── File log helper — updates existing entry or adds new ──────────────────
+  // â”€â”€ File log helper â€” updates existing entry or adds new â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const upsertFile = useCallback((agent_id, filename, full_path) => {
     setFileLog(prev => {
       const idx = prev.findIndex(f => f.filename === filename && f.agent_id === agent_id);
@@ -376,7 +380,7 @@ export default function App() {
     });
   }, []);
 
-  // ── Handle incoming backend messages ──────────────────────────────────────
+  // â”€â”€ Handle incoming backend messages â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleWsMessage = useCallback((msg) => {
     const { type, from, to, content, tag, extra, task_id } = msg;
     const pushMsg = (chatId, fromId, text, messageTag) => {
@@ -401,7 +405,7 @@ export default function App() {
       setProjectName(extra?.project_name);
       setProjectRoot(extra?.project_root);
       pushMsg("team", "orchestrator",
-        `✅ Project: ${extra?.project_name}\n📁 ${extra?.project_root}`, "STATUS");
+        `Project: ${extra?.project_name}\nDIR ${extra?.project_root}`, "STATUS");
       return;
     }
 
@@ -458,7 +462,7 @@ export default function App() {
     }
   }, [handleWsMessage]);
 
-  // ── Message helpers ───────────────────────────────────────────────────────
+  // â”€â”€ Message helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const addMsgDirect = (chatId, from, content, tag) => {
     setChatList(prev => prev.map(c => {
       if (c.id !== chatId) return c;
@@ -474,29 +478,28 @@ export default function App() {
   const setTyping = useCallback((chatId, agentId) => setTypingIn(prev => ({ ...prev, [chatId]: agentId || null })), []);
   const setAgentStatus = useCallback((id, status) => setAgents(prev => ({ ...prev, [id]: { ...prev[id], status } })), []);
   const clearTimers = () => { timers.current.forEach(clearTimeout); timers.current = []; };
-
-  // ── Fire file write to backend (local/mock-only when backend offline) ─────
+  // â”€â”€ Fire file write to backend (local/mock-only when backend offline) â”€â”€â”€â”€â”€
   const fireFileWrite = useCallback((fileWrite, fromAgent) => {
     if (!fileWrite) return;
     const { agent, filename, content } = fileWrite;
 
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      // Send to backend → Python workspace.write() → real file on disk
-      // Backend will confirm back via "file_written" message → upsertFile()
+      // Send to backend â†’ Python workspace.write() â†’ real file on disk
+      // Backend will confirm back via "file_written" message â†’ upsertFile()
       wsRef.current.send(JSON.stringify({
         type: "file_write", agent_id: agent, filename, content, from: fromAgent,
       }));
     } else {
-      // Backend offline — update UI only (no disk write possible)
+      // Backend offline â€” update UI only (no disk write possible)
       upsertFile(agent, filename, `[offline]/${agent}/${filename}`);
     }
   }, [upsertFile]);
 
-  // ── Group chat spawn (always local — direct/group chats don't touch backend)
+  // â”€â”€ Group chat spawn (always local â€” direct/group chats don't touch backend)
   const spawnGroupChat = useCallback((groupDef, triggerChatId) => {
     const groupId = "group_" + uid();
     setChatList(prev => [...prev, { id: groupId, type: "group", title: groupDef.title, reason: groupDef.reason, members: groupDef.members, messages: [], unread: 0, isNew: true }]);
-    addMsg(triggerChatId, groupDef.members[0], `↗ Spawning group thread: "${groupDef.title}" — ${groupDef.reason}`, "STATUS");
+    addMsg(triggerChatId, groupDef.members[0], `Spawning group thread: "${groupDef.title}" - ${groupDef.reason}`, "STATUS");
 
     const t = setTimeout(() => {
       setActiveChat(groupId);
@@ -510,7 +513,7 @@ export default function App() {
           addMsg(groupId, step.from, step.content, step.tag);
 
           if (step.fileWrite) {
-            // ✅ This fires the real disk write via backend
+            // âœ… This fires the real disk write via backend
             fireFileWrite(step.fileWrite, step.from);
           }
 
@@ -525,7 +528,7 @@ export default function App() {
     timers.current.push(t);
   }, [addMsg, setAgentStatus, setTyping, fireFileWrite]);
 
-  // ── Team scenario (mock — only runs when backend is OFFLINE) ─────────────
+  // â”€â”€ Team scenario (mock â€” only runs when backend is OFFLINE) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const runTeamScenario = useCallback((scenario) => {
     clearTimers();
     setIsBusy(true);
@@ -548,7 +551,7 @@ export default function App() {
     });
   }, [addMsg, setAgentStatus, setTyping, fireFileWrite]);
 
-  // ── Send handler ──────────────────────────────────────────────────────────
+  // â”€â”€ Send handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleSend = useCallback((chatId) => {
     const text = (inputs[chatId] || "").trim();
     if (!text) return;
@@ -558,7 +561,7 @@ export default function App() {
 
     addMsg(chatId, "user", text, null);
 
-    // ── Team chat ──────────────────────────────────────────────────────────
+    // â”€â”€ Team chat â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (chatId === "team") {
       if (isBusy) return;
 
@@ -570,21 +573,21 @@ export default function App() {
           members: new Set(),
           groupChatId: null,
         };
-        // ✅ FIX 1: Backend live — send ONLY to backend, do NOT run mock scenario
-        // Real Python agents respond → messages stream back via WebSocket
+        // âœ… FIX 1: Backend live â€” send ONLY to backend, do NOT run mock scenario
+        // Real Python agents respond â†’ messages stream back via WebSocket
         wsRef.current.send(JSON.stringify({
           type: "user_message", content: text, to: "team",
           task_id: taskId,
         }));
       } else {
-        // Backend offline — run mock scenario (it handles everything locally)
+        // Backend offline â€” run mock scenario (it handles everything locally)
         const scenario = detectScenario(text);
         setTimeout(() => runTeamScenario(scenario), 350);
       }
       return;
     }
 
-    // ── Direct chat (always local — private) ───────────────────────────────
+    // â”€â”€ Direct chat (always local â€” private) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (chat.type === "direct") {
       const agentId = chatId;
 
@@ -616,7 +619,7 @@ export default function App() {
         const t2 = setTimeout(() => {
           setTyping(chatId, null);
           addMsg(chatId, agentId, step.content, step.tag);
-          // ✅ FIX 2: fire real file write for direct chat steps
+          // âœ… FIX 2: fire real file write for direct chat steps
           if (step.fileWrite) fireFileWrite(step.fileWrite, agentId);
           if (isLast) {
             setAgentStatus(agentId, "idle");
@@ -629,7 +632,7 @@ export default function App() {
       return;
     }
 
-    // ── Group chat ─────────────────────────────────────────────────────────
+    // â”€â”€ Group chat â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (chat.type === "group") {
       const responder = chat.members[0];
       setAgentStatus(responder, "working");
@@ -643,6 +646,32 @@ export default function App() {
     }
   }, [inputs, chatList, isBusy, backendLive, addMsg, setAgentStatus, setTyping, runTeamScenario, spawnGroupChat, fireFileWrite]);
 
+  const handleDatasetUpload = useCallback(async (file) => {
+    if (!file || !backendLive || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    if (!/\.csv$/i.test(file.name)) return;
+    setUploading(true);
+    try {
+      const ab = await file.arrayBuffer();
+      let binary = "";
+      const bytes = new Uint8Array(ab);
+      const chunk = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunk) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+      }
+      wsRef.current.send(JSON.stringify({
+        type: "dataset_upload",
+        filename: file.name,
+        content_b64: btoa(binary),
+        to: "orchestrator",
+      }));
+    } catch (_) {
+      // Silent by design.
+    } finally {
+      setUploading(false);
+      if (uploadRef.current) uploadRef.current.value = "";
+    }
+  }, [backendLive]);
+
   const currentChat = chatList.find(c => c.id === activeChat);
 
   return (
@@ -651,10 +680,10 @@ export default function App() {
 
       <header style={S.header}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <div style={S.logo}>🤖</div>
+          <div style={S.logo}>AI</div>
           <div>
             <div style={{ fontSize: 14, fontWeight: 700, letterSpacing: ".05em", color: "#e8e8f0" }}>AI Engineering Platform</div>
-            <div style={{ fontSize: 9, color: "#3a3a3a", letterSpacing: ".1em", textTransform: "uppercase" }}>Multi-Agent Autonomous System · v2.1</div>
+            <div style={{ fontSize: 9, color: "#3a3a3a", letterSpacing: ".1em", textTransform: "uppercase" }}>Multi-Agent Autonomous System | v2.1</div>
           </div>
         </div>
         <ConnBadge status={connStatus} project={projectName} />
@@ -670,19 +699,19 @@ export default function App() {
             <div style={{ padding: "8px 18px", background: "#090909", borderBottom: "1px solid #111", fontSize: 11, color: "#2a2a2a" }}>
               <span style={{ color: AGENTS[activeChat]?.color, fontWeight: 700 }}>Private channel</span>
               {backendLive
-                ? " — routed to real backend agent."
-                : " — backend offline, using local mock flow."}
+                ? " - routed to real backend agent."
+                : " - backend offline, using local mock flow."}
             </div>
           )}
           {currentChat?.type === "group" && (
             <div style={{ padding: "8px 18px", background: "#0a091f", borderBottom: "1px solid #6366f122", fontSize: 11, color: "#2a2a2a" }}>
               <span style={{ color: "#a78bfa", fontWeight: 700 }}>Group thread</span>
-              {" — auto-created. All members coordinate here. Files are rewritten as changes are made."}
+              {" - auto-created. All members coordinate here. Files are rewritten as changes are made."}
             </div>
           )}
           {!backendLive && chatList.find(c=>c.id==="team")?.messages.length <= 1 && (
             <div style={{ padding: "8px 18px", background: "#1a0f00", borderBottom: "1px solid #3a2000", fontSize: 11, color: "#f59e0b" }}>
-              ⚠ Backend offline — running in mock mode. Run <code style={{ background: "#111", padding: "1px 5px", borderRadius: 3 }}>python -m api.main</code> to connect real agents.
+              Backend offline - running in mock mode. Run <code style={{ background: "#111", padding: "1px 5px", borderRadius: 3 }}>python -m api.main</code> to connect real agents.
             </div>
           )}
 
@@ -692,7 +721,36 @@ export default function App() {
           </div>
 
           <div style={S.inputArea}>
+            <input
+              ref={uploadRef}
+              type="file"
+              accept=".csv,text/csv"
+              style={{ display: "none" }}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) handleDatasetUpload(f);
+              }}
+            />
             <div style={S.inputRow}>
+              <button
+                onClick={() => uploadRef.current?.click()}
+                disabled={!backendLive || uploading}
+                title="Upload dataset (.csv)"
+                style={{
+                  width: 42,
+                  height: 42,
+                  borderRadius: 9,
+                  border: "1px solid #1f2937",
+                  background: "#0a0f1a",
+                  color: "#93c5fd",
+                  fontSize: 15,
+                  cursor: "pointer",
+                  opacity: (!backendLive || uploading) ? 0.35 : 1,
+                  flexShrink: 0,
+                }}
+              >
+                {uploading ? "..." : "Upload"}
+              </button>
               <textarea
                 value={inputs[activeChat] || ""}
                 onChange={e => setInputs(prev => ({ ...prev, [activeChat]: e.target.value }))}
@@ -700,10 +758,10 @@ export default function App() {
                 disabled={activeChat === "team" && isBusy}
                 rows={2}
                 placeholder={
-                  activeChat === "team" && isBusy ? "Agents working…"
-                  : activeChat === "team" ? "Give the team an instruction… e.g. 'create a fraud detection model'"
-                  : currentChat?.type === "group" ? "Add instruction to this thread…"
-                  : `Message ${AGENTS[activeChat]?.name}… e.g. 'fix the bug' · 'retrain' · 'deploy'`
+                  activeChat === "team" && isBusy ? "Agents working..."
+                  : activeChat === "team" ? "Give the team an instruction... e.g. 'create a fraud detection model'"
+                  : currentChat?.type === "group" ? "Add instruction to this thread..."
+                  : `Message ${AGENTS[activeChat]?.name}... e.g. 'fix the bug' | 'retrain' | 'deploy'`
                 }
                 style={{ ...S.textarea, borderColor: activeChat === "team" ? "#1a1a1a" : currentChat?.type === "group" ? "#6366f133" : (AGENTS[activeChat]?.color + "33"), opacity: activeChat === "team" && isBusy ? 0.5 : 1 }}
               />
@@ -711,11 +769,11 @@ export default function App() {
                 onClick={() => handleSend(activeChat)}
                 disabled={(activeChat === "team" && isBusy) || !(inputs[activeChat]||"").trim()}
                 style={{ ...S.sendBtn, background: activeChat === "team" ? "#6366f1" : currentChat?.type === "group" ? "#6366f1" : (AGENTS[activeChat]?.color || "#6366f1"), opacity: ((activeChat === "team" && isBusy) || !(inputs[activeChat]||"").trim()) ? 0.3 : 1 }}
-              >↑</button>
+              >Send</button>
             </div>
             <div style={{ fontSize: 9, color: "#1e1e1e", marginTop: 5 }}>
-              ENTER to send · SHIFT+ENTER for newline
-              {activeChat !== "team" && currentChat?.type !== "group" && <span style={{ color: "#2a2a2a" }}> · Group threads auto-spawn when more agents are needed</span>}
+              ENTER to send | SHIFT+ENTER for newline
+              {activeChat !== "team" && currentChat?.type !== "group" && <span style={{ color: "#2a2a2a" }}> | Group threads auto-spawn when more agents are needed</span>}
             </div>
           </div>
         </div>
@@ -726,7 +784,7 @@ export default function App() {
   );
 }
 
-// ─── Styles ───────────────────────────────────────────────────────────────────
+// â”€â”€â”€ Styles â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const S = {
   root:     { width: "100vw", height: "100vh", background: "#050505", display: "flex", flexDirection: "column", fontFamily: "'IBM Plex Mono',monospace", color: "#c8c8d0", overflow: "hidden" },
   header:   { padding: "10px 20px", borderBottom: "1px solid #111", display: "flex", alignItems: "center", justifyContent: "space-between", background: "#070707", flexShrink: 0 },
@@ -760,8 +818,11 @@ const CSS = `
 
 function detectTag(content) {
   const c = content.toLowerCase();
-  if (["✅","complete","done","deployed","approved","passed"].some(k => c.includes(k))) return "DONE";
-  if (["🔴","critical","exploit","blocked","❌"].some(k => c.includes(k))) return "ALERT";
+  if (["complete","done","deployed","approved","passed","success"].some(k => c.includes(k))) return "DONE";
+  if (["critical","exploit","blocked","error","failed","alert"].some(k => c.includes(k))) return "ALERT";
   if (["found","result","report","eda","accuracy","score"].some(k => c.includes(k))) return "REPORT";
   return "STATUS";
 }
+
+
+

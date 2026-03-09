@@ -18,6 +18,14 @@ This platform simulates and coordinates a real software/ML team:
 - Shared file workspace with per-agent folders
 - FastAPI + WebSocket backend for real-time status and messaging
 - React GUI with team chat, direct chats, group threads, and activity feed
+- Dataset upload from GUI (`.csv`) to `shared/datasets/`
+- Automatic transparency run on uploaded dataset (backend-triggered)
+- Transparency output persistence to `shared/output.txt`
+- Hybrid RAG indexing over transparency output:
+  - Dense retrieval via LanceDB
+  - Lexical retrieval via TF-IDF
+  - Hybrid scoring for better recall/precision
+- Data Scientist/Data Analyst report generation now uses hybrid-RAG context from full transparency output
 - Security pipeline:
   - SAST static scans
   - Runtime security dynamic checks
@@ -55,14 +63,17 @@ test_api_key.py Standalone Groq API key test script
 3. Agents subscribe to message-bus channels.
 4. GUI connects via `ws://localhost:8000/ws`.
 5. User messages are routed to orchestrator or a direct agent.
-6. Agents write files via `tools/workspace.py`.
-7. File events and statuses stream back to GUI in real time.
+6. Optional: user uploads dataset from GUI (`dataset_upload` websocket event).
+7. Backend stores dataset in `shared/datasets/`, runs transparency pipeline, writes `shared/output.txt`, then builds LanceDB + lexical hybrid index under `shared/rag/`.
+8. Agents write files via `tools/workspace.py`.
+9. File events and statuses stream back to GUI in real time.
 
 ## Prerequisites
 
 - Python 3.10+
 - Node.js 18+ and npm
 - Git installed and authenticated (for GitHub sync)
+- LanceDB Python package for vector indexing (`pip install lancedb`)
 
 ## Environment Variables
 
@@ -70,12 +81,18 @@ Create a `.env` in repo root:
 
 ```env
 GITHUB_REPO_URL=https://github.com/<owner>/<repo>.git
+GROQ_API_KEY=...
+GROQ_MODEL=llama-3.3-70b-versatile
+GROQ_MAX_TOKENS=1200
+GROQ_MAX_RETRIES=4
+GROQ_MIN_INTERVAL_SEC=1.2
 ```
 
 Notes:
 - Startup validates `GITHUB_REPO_URL`.
 - If missing/invalid, startup prompts you and writes back to `.env`.
 - `GITHUB_REPO_URL` must be a **repository URL**, not a profile URL.
+- Groq settings are optional but recommended for stable LLM reporting behavior.
 
 ## Setup
 
@@ -110,8 +127,19 @@ Use Team chat for broad instructions like:
 - "build a churn model and deploy it"
 - "run security audit"
 - "build frontend dashboard"
+- "analyse data" (after uploading dataset)
 
 Orchestrator assigns agents and summarizes outcomes.
+
+### Dataset Upload + RAG Flow
+
+1. Use the GUI upload button to upload a `.csv` dataset.
+2. Backend silently:
+   - saves dataset to `shared/datasets/<file>.csv`
+   - runs transparency pipeline on that dataset
+   - writes full output to `shared/output.txt`
+   - builds hybrid RAG index in `shared/rag/` (LanceDB + TF-IDF)
+3. When Data Scientist / Data Analyst run analysis, they query this hybrid RAG context to write richer reports grounded in the full transparency output.
 
 ### Direct/Private Chat
 
