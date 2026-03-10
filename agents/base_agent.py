@@ -15,8 +15,8 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from pathlib import Path
 
-from api.message_bus import bus, send_to_agent, broadcast
-from tools.rag_store import hybrid_search
+from api.message_bus import bus, send_to_agent, broadcast, publish_status
+from tools.rag_store import hybrid_search, build_hybrid_index_from_texts
 from tools.workspace import workspace
 
 
@@ -24,6 +24,7 @@ class BaseAgent(ABC):
     AGENT_ID: str = "base"
     SYSTEM_PROMPT: str = "You are a helpful AI agent."
     _LLM_LOCK: asyncio.Lock | None = None
+    _LLM_SEMAPHORE: asyncio.Semaphore | None = None
     _LLM_LAST_CALL_TS: float = 0.0
 
     def __init__(self):
@@ -49,6 +50,7 @@ class BaseAgent(ABC):
             self._seen.pop()
 
         self.status = "working"
+        await publish_status(self.AGENT_ID, "working")
         try:
             print(
                 f"[{self.AGENT_ID}] Received task from {payload.get('from', '?')}: "
@@ -60,6 +62,7 @@ class BaseAgent(ABC):
         except Exception as exc:
             print(f"[{self.AGENT_ID}] ERROR in handle_task: {exc}")
             self.status = "error"
+            await publish_status(self.AGENT_ID, "error")
             await self.report(
                 f"Error in {self.AGENT_ID}: {str(exc)}. Please check logs or provide clarification.",
                 task_id=envelope["payload"].get("task_id"),
@@ -67,6 +70,7 @@ class BaseAgent(ABC):
         finally:
             if self.status != "error":
                 self.status = "idle"
+                await publish_status(self.AGENT_ID, "idle")
 
     @abstractmethod
     async def handle_task(self, payload: dict) -> str | None:
@@ -128,6 +132,17 @@ class BaseAgent(ABC):
             cls._LLM_LOCK = asyncio.Lock()
         return cls._LLM_LOCK
 
+    @classmethod
+    def _llm_semaphore(cls) -> asyncio.Semaphore:
+        if cls._LLM_SEMAPHORE is None:
+            raw = (os.getenv("GROQ_MAX_CONCURRENCY") or "1").strip()
+            try:
+                val = max(1, min(8, int(raw)))
+            except Exception:
+                val = 1
+            cls._LLM_SEMAPHORE = asyncio.Semaphore(val)
+        return cls._LLM_SEMAPHORE
+
     @staticmethod
     def _groq_max_tokens() -> int:
         raw = (os.getenv("GROQ_MAX_TOKENS") or "1200").strip()
@@ -150,13 +165,20 @@ class BaseAgent(ABC):
         )
         resp.raise_for_status()
         data = resp.json()
-        return (data.get("choices", [{}])[0].get("message", {}).get("content", "") or "").strip()
+        content = (data.get("choices", [{}])[0].get("message", {}).get("content", "") or "").strip()
+        if not content:
+            try:
+                preview = json.dumps(data)[:800]
+            except Exception:
+                preview = str(data)[:800]
+            return f"[LLM empty] raw_response={preview}"
+        return content
 
     async def _call_groq_with_retry(self, payload: dict, api_key: str) -> str:
         max_retries_raw = (os.getenv("GROQ_MAX_RETRIES") or "4").strip()
         min_interval_raw = (os.getenv("GROQ_MIN_INTERVAL_SEC") or "1.2").strip()
         try:
-            max_retries = max(0, min(8, int(max_retries_raw)))
+            max_retries = max(0, int(max_retries_raw))
         except Exception:
             max_retries = 4
         try:
@@ -166,14 +188,15 @@ class BaseAgent(ABC):
 
         for attempt in range(max_retries + 1):
             try:
-                async with self._llm_lock():
-                    now = time.monotonic()
-                    wait_s = max(0.0, min_interval - (now - BaseAgent._LLM_LAST_CALL_TS))
-                    if wait_s > 0:
-                        await asyncio.sleep(wait_s)
-                    result = await asyncio.to_thread(self._sync_groq_call, payload, api_key)
-                    BaseAgent._LLM_LAST_CALL_TS = time.monotonic()
-                    return result
+                async with self._llm_semaphore():
+                    async with self._llm_lock():
+                        now = time.monotonic()
+                        wait_s = max(0.0, min_interval - (now - BaseAgent._LLM_LAST_CALL_TS))
+                        if wait_s > 0:
+                            await asyncio.sleep(wait_s)
+                        result = await asyncio.to_thread(self._sync_groq_call, payload, api_key)
+                        BaseAgent._LLM_LAST_CALL_TS = time.monotonic()
+                        return result
             except requests.HTTPError as exc:
                 status = exc.response.status_code if exc.response is not None else None
                 if status == 429 and attempt < max_retries:
@@ -223,6 +246,42 @@ class BaseAgent(ABC):
             return hybrid_search(rag_dir, query=query, top_k=top_k)
         except Exception:
             return []
+
+    def rag_query_reports(self, query: str, top_k: int = 6) -> list[dict]:
+        if not workspace.is_initialized or not workspace.project_root:
+            return []
+        rag_dir = workspace.project_root / "shared" / "rag_reports"
+        if not rag_dir.exists():
+            return []
+        try:
+            return hybrid_search(rag_dir, query=query, top_k=top_k)
+        except Exception:
+            return []
+
+    def build_reports_rag_index(self) -> bool:
+        if not workspace.is_initialized or not workspace.project_root:
+            return False
+        root = workspace.project_root
+        report_paths = [
+            root / "data_scientist" / "report.md",
+            root / "data_analyst" / "report.md",
+            root / "data_analyst" / "business_report.md",
+        ]
+        texts = []
+        for p in report_paths:
+            if p.exists():
+                try:
+                    texts.append(f"FILE: {p.name}\n" + p.read_text(encoding="utf-8", errors="replace"))
+                except Exception:
+                    pass
+        if not texts:
+            return False
+        rag_dir = root / "shared" / "rag_reports"
+        try:
+            build_hybrid_index_from_texts(texts, rag_dir)
+            return True
+        except Exception:
+            return False
 
     async def _ensure_jupyter_kernel_stack(self) -> bool:
         has_client = importlib.util.find_spec("jupyter_client") is not None

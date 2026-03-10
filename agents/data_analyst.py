@@ -213,11 +213,17 @@ for col in list(num_means.index)[:5]:
             if workspace.is_initialized:
                 workspace.write("data_analyst", "report.md", business_report, task_id)
                 workspace.write("data_analyst", "business_report.md", business_report, task_id)
+                self.build_reports_rag_index()
 
             await self.report(
                 "Data Analyst completed analysis.\n"
                 "Saved: data_analyst/jupyter_output.txt, data_analyst/report.md\n"
                 f"Execution runner: {exec_result.get('runner')} | success={exec_result.get('success')}",
+                task_id,
+            )
+            await self.message(
+                "orchestrator",
+                "Data Analyst completed analysis and report.md is ready.",
                 task_id,
             )
             return None

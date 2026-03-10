@@ -114,6 +114,13 @@ def build_hybrid_index_from_text(text: str, out_dir: Path) -> dict:
     return meta
 
 
+def build_hybrid_index_from_texts(texts: list[str], out_dir: Path) -> dict:
+    joined = "\n\n".join([t for t in texts if t and t.strip()])
+    if not joined.strip():
+        raise ValueError("Cannot build RAG index from empty text list")
+    return build_hybrid_index_from_text(joined, out_dir)
+
+
 def _load_index(index_dir: Path) -> dict:
     key = str(index_dir.resolve())
     cached = _CACHE.get(key)

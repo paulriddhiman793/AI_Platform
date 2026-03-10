@@ -111,12 +111,12 @@ class OrchestratorAgent(BaseAgent):
             task["reported"] = set()
             await self.message(
                 "data_scientist",
-                f"{prompt}\nStart with EDA and feature recommendations. Write reports first.",
+                f"{prompt}\nAnalyse data now. Start with EDA and feature recommendations. Write reports first.",
                 task_id,
             )
             await self.message(
                 "data_analyst",
-                f"{prompt}\nValidate data quality/history and write monitoring report first.",
+                f"{prompt}\nAnalyse data now. Validate data quality/history and write monitoring report first.",
                 task_id,
             )
             await self.report(
@@ -130,10 +130,10 @@ class OrchestratorAgent(BaseAgent):
             task["reported"] = set()
             await self.message(
                 "ml_engineer",
-                f"{prompt}\nRun transparency_quick_probe.py and return output.",
+                f"{prompt}\nUse hybrid RAG from shared/output.txt and reports to train the model.",
                 task_id,
             )
-            await self.report("Phase 2: ML Engineer running transparency quick probe.", task_id)
+            await self.report("Phase 2: ML Engineer training with RAG context.", task_id)
             return
 
     async def handle_task(self, payload: dict) -> str | None:
@@ -186,30 +186,14 @@ class OrchestratorAgent(BaseAgent):
         # New user instruction
         if self._is_build_flow(content):
             if task_id:
-                await self.report("Hidden PowerShell runner started (team chat model request).", task_id)
-                probe = await self.run_model_transparency_probe(task_id=task_id)
-                full_out = probe.get("output", "") or "[no output]"
-                txt_name = "transparency_quick_probe_output.txt"
-                if workspace.is_initialized:
-                    workspace.write("shared", txt_name, full_out, task_id)
-
                 self._active_tasks[task_id] = {
-                    "flow": "generic",
+                    "flow": "pipeline",
+                    "phase": "data_review",
                     "user_message": content,
                     "agents_assigned": ["data_scientist", "data_analyst", "ml_engineer"],
                     "results": [],
                 }
-                await self.report(
-                    f"PowerShell runner finished.\n"
-                    f"success={probe.get('success')} | script={probe.get('script')}\n"
-                    f"Saved: shared/{txt_name}\n"
-                    "Forwarding exact output to Data Scientist, Data Analyst, ML Engineer.",
-                    task_id,
-                )
-                forwarded = f"__PROBE_OUTPUT_BEGIN__\n{full_out}"
-                await self.message("data_scientist", forwarded, task_id)
-                await self.message("data_analyst", forwarded, task_id)
-                await self.message("ml_engineer", forwarded, task_id)
+                await self._dispatch_pipeline_phase(self._active_tasks[task_id], task_id)
             return None
 
         agents = self.route(content)

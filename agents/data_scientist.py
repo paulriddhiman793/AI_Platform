@@ -211,11 +211,17 @@ for k, v in null_rate.items():
             )
             if workspace.is_initialized:
                 workspace.write("data_scientist", "report.md", report, task_id)
+                self.build_reports_rag_index()
 
             await self.report(
                 "Data Scientist completed analysis.\n"
                 "Saved: data_scientist/jupyter_output.txt, data_scientist/report.md\n"
                 f"Execution runner: {exec_result.get('runner')} | success={exec_result.get('success')}",
+                task_id,
+            )
+            await self.message(
+                "orchestrator",
+                "Data Scientist completed analysis and report.md is ready.",
                 task_id,
             )
             return None
