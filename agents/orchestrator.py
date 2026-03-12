@@ -13,7 +13,7 @@ ROUTING_TABLE = {
     "churn": ["ml_engineer", "data_scientist"],
     "accuracy": ["ml_engineer", "data_scientist"],
     "pipeline": ["ml_engineer"],
-    "deploy": ["ml_engineer", "sast", "runtime_security"],
+    "deploy": ["ml_engineer"],
     "retrain": ["ml_engineer", "data_scientist"],
 
     # Data work
@@ -33,17 +33,7 @@ ROUTING_TABLE = {
     "kpi": ["data_analyst"],
     "monitoring": ["data_analyst", "ml_engineer"],
 
-    # Frontend
-    "frontend": ["ml_engineer", "data_scientist", "frontend"],
-
-    # Security
-    "security": ["sast", "runtime_security"],
-    "scan": ["sast"],
-    "audit": ["sast", "runtime_security"],
-    "vulnerability": ["sast"],
-    "pentest": ["runtime_security"],
-    "owasp": ["runtime_security", "sast"],
-    "threat": ["runtime_security"],
+    # Frontend / Security agents removed
 
     # GitHub workflow
     "github": ["github"],
@@ -91,6 +81,32 @@ class OrchestratorAgent(BaseAgent):
         if any(k in msg for k in ("github", "repo", "branch", "merge", "push")):
             return False
         return any(k in msg for k in BUILD_FLOW_KEYWORDS)
+
+    def _analysis_ready(self) -> bool:
+        if not workspace.project_root:
+            return False
+
+        root = workspace.project_root
+        da_findings = root / "data_analyst" / "findings.txt"
+        ds_dir = root / "data_scientist"
+        ds_suggestions = list(ds_dir.glob("*_feature_suggestions.md")) if ds_dir.exists() else []
+
+        if not da_findings.exists() or not ds_suggestions:
+            return False
+
+        data_dir = root / "shared" / "datasets"
+        if data_dir.exists():
+            latest_data_mtime = max(
+                (p.stat().st_mtime for p in data_dir.glob("*.csv")),
+                default=None,
+            )
+            if latest_data_mtime:
+                if da_findings.stat().st_mtime < latest_data_mtime:
+                    return False
+                if max(p.stat().st_mtime for p in ds_suggestions) < latest_data_mtime:
+                    return False
+
+        return True
 
     @staticmethod
     def _has_issue_signal(text: str) -> bool:
@@ -175,24 +191,24 @@ class OrchestratorAgent(BaseAgent):
                 summary = self._summarise(task)
                 del self._active_tasks[task_id]
                 await self.report(f"Task complete. {summary}", task_id)
-                await self.message(
-                    "github",
-                    "All assigned agents completed. Perform repository sync: "
-                    "push main, push per-agent branches, then merge branches to main.",
-                    task_id,
-                )
             return None
 
         # New user instruction
         if self._is_build_flow(content):
             if task_id:
+                phase = "ml_build" if self._analysis_ready() else "data_review"
                 self._active_tasks[task_id] = {
                     "flow": "pipeline",
-                    "phase": "data_review",
+                    "phase": phase,
                     "user_message": content,
                     "agents_assigned": ["data_scientist", "data_analyst", "ml_engineer"],
                     "results": [],
                 }
+                if phase == "ml_build":
+                    await self.report(
+                        "Analysis outputs detected. Skipping data review and starting ML training.",
+                        task_id,
+                    )
                 await self._dispatch_pipeline_phase(self._active_tasks[task_id], task_id)
             return None
 

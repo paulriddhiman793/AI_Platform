@@ -1,9 +1,11 @@
-from datetime import datetime
+﻿from datetime import datetime
+import json
 import os
 import time
 import asyncio
 import ast
 import re
+import math
 from pathlib import Path
 import os
 from agents.base_agent import BaseAgent
@@ -108,6 +110,1093 @@ class MLEngineerAgent(BaseAgent):
             self._GEMINI_DAY_COUNT += 1
 
         return None
+
+    def _extract_json_block(self, output: str, begin: str, end: str) -> dict | None:
+        """
+        Extract and parse a JSON block delimited by begin/end markers from script output.
+        Handles whitespace, encoding artifacts, NaN/Infinity literals, and trailing commas.
+        """
+        if not output or begin not in output or end not in output:
+            return None
+        blob = output.split(begin, 1)[1].split(end, 1)[0].strip()
+        if not blob:
+            return None
+        try:
+            return json.loads(blob)
+        except json.JSONDecodeError:
+            import re
+            blob = re.sub(r",\s*([}\]])", r"\1", blob)     # trailing commas
+            blob = re.sub(r"\bNaN\b",      "null",  blob)  # NaN      â†’ null
+            blob = re.sub(r"\bInfinity\b", "1e308", blob)  # Infinity â†’ large float
+            blob = re.sub(r"\b-Infinity\b","-1e308",blob)
+            try:
+                return json.loads(blob)
+            except Exception:
+                return None
+
+    def _find_latest_raw_dataset(self) -> Path | None:
+        if not workspace.is_initialized or not workspace.project_root:
+            return None
+        ds_dir = workspace.project_root / "shared" / "datasets"
+        if not ds_dir.exists():
+            return None
+        candidates = []
+        for ext in ("*.csv", "*.xlsx", "*.xls", "*.parquet", "*.json", "*.tsv"):
+            candidates.extend(ds_dir.glob(ext))
+        if not candidates:
+            return None
+        raw = [p for p in candidates if "engineered" not in p.name.lower()]
+        if raw:
+            return sorted(raw, key=lambda p: p.stat().st_mtime, reverse=True)[0]
+        return sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True)[0]
+
+    def _build_comparison_report(self, raw_payload: dict | None, eng_payload: dict | None,
+                                 raw_path: Path | None, eng_path: Path | None) -> str:
+        def _best_summary(p: dict | None) -> dict:
+            if not p:
+                return {}
+            best = p.get("best_model") or {}
+            task_type = p.get("task_type", "unknown")
+            metric = "r2" if task_type == "regression" else "f1"
+            test = best.get("test", {}) or {}
+            score = best.get("score")
+            if score is None:
+                score = test.get(metric)
+            return {
+                "model": best.get("model"),
+                "score": score,
+                "gap": best.get("gap"),
+                "underfit": best.get("underfit"),
+                "task_type": task_type,
+            }
+
+        raw_s = _best_summary(raw_payload)
+        eng_s = _best_summary(eng_payload)
+        lines = [
+            "=" * 72,
+            "  ML ENGINEER - RAW VS ENGINEERED COMPARISON",
+            "=" * 72,
+            f"  Raw dataset       : {raw_path or 'N/A'}",
+            f"  Engineered dataset: {eng_path or 'N/A'}",
+            "",
+        ]
+        if raw_s:
+            lines += [
+                "RAW BEST MODEL",
+                "-" * 72,
+                f"  Model   : {raw_s.get('model')}",
+                f"  Score   : {raw_s.get('score')}",
+                f"  Gap     : {raw_s.get('gap')}",
+                f"  Underfit: {raw_s.get('underfit')}",
+                "",
+            ]
+        else:
+            lines += ["RAW BEST MODEL", "-" * 72, "  No results.", ""]
+
+        if eng_s:
+            lines += [
+                "ENGINEERED BEST MODEL",
+                "-" * 72,
+                f"  Model   : {eng_s.get('model')}",
+                f"  Score   : {eng_s.get('score')}",
+                f"  Gap     : {eng_s.get('gap')}",
+                f"  Underfit: {eng_s.get('underfit')}",
+                "",
+            ]
+        else:
+            lines += ["ENGINEERED BEST MODEL", "-" * 72, "  No results.", ""]
+
+        # Simple improvement summary
+        try:
+            if raw_s and eng_s:
+                raw_score = float(raw_s.get("score"))
+                eng_score = float(eng_s.get("score"))
+                delta = eng_score - raw_score
+                pct = (delta / abs(raw_score) * 100) if raw_score != 0 else None
+                lines.append("SUMMARY")
+                lines.append("-" * 72)
+                if pct is not None:
+                    lines.append(f"  Score change: {delta:.6f} ({pct:.2f}%)")
+                else:
+                    lines.append(f"  Score change: {delta:.6f}")
+        except Exception:
+            pass
+
+        return "\n".join(lines)
+
+    async def _run_training_for_dataset(self, ds_path: Path, label: str, task_id: str | None) -> dict | None:
+        code = self._build_ml_optuna_code(Path(ds_path))
+        exec_result = await self.run_code_in_jupyter_kernel(code, timeout_s=1200)
+        output = exec_result.get("output", "") or "[no output]"
+        if workspace.is_initialized:
+            workspace.write("ml_engineer", f"jupyter_output_{label}.txt", output, task_id)
+
+        payload = self._extract_json_block(output, "__ML_RESULTS_BEGIN__", "__ML_RESULTS_END__")
+        if payload:
+            report, final_report = self._build_ml_reports(Path(ds_path), payload)
+        else:
+            report = output
+            final_report = "Best model could not be determined (no structured results)."
+
+        if workspace.is_initialized:
+            workspace.write("ml_engineer", f"report_{label}.txt", report, task_id)
+            workspace.write("ml_engineer", f"final_report_{label}.txt", final_report, task_id)
+        return payload
+
+    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    def _build_ml_reports(self, dataset_path: "Path", payload: dict) -> tuple[str, str]:
+        """
+        Build two plain-text reports from the v2 ML pipeline payload.
+
+        Report 1 â€” Full model comparison:
+            â€¢ Every model's train/test/CV metrics, overfit gap, stability, timing
+            â€¢ Leakage / suspect feature audit section
+            â€¢ Ranked leaderboard table with family and CV-std columns
+
+        Report 2 â€” Final best-model report:
+            â€¢ Performance summary with score breakdown (cv_mean, std penalty, overfit penalty)
+            â€¢ All tuned hyperparameters
+            â€¢ SHAP top-15 feature importances (ASCII bar chart)
+            â€¢ Leakage warnings surfaced prominently if any features were removed
+        """
+        task_type   = payload.get("task_type",   "unknown")
+        target_col  = payload.get("target_col",  "unknown")
+        n_train     = payload.get("n_train",     "?")
+        n_test      = payload.get("n_test",      "?")
+        n_folds     = payload.get("n_cv_folds",  "?")
+        optuna_t    = payload.get("optuna_trials","?")
+        timestamp   = payload.get("run_timestamp","unknown")
+        results     = payload.get("results",     [])
+        leaderboard = payload.get("leaderboard", [])
+        best        = payload.get("best_model")
+        shap_fi     = payload.get("feature_importances_shap", {})
+        leaky       = payload.get("leaky_features_removed",   [])
+        suspect     = payload.get("suspect_features",         [])
+        feat_corr   = payload.get("feature_target_corr",      {})
+
+        primary = "r2" if task_type == "regression" else "f1"
+
+        # â”€â”€ Report 1: full comparison â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        lines = [
+            "=" * 72,
+            "  ML ENGINEER â€” FULL MODEL COMPARISON REPORT  (v2 leakage-aware)",
+            "=" * 72,
+            f"  Run timestamp : {timestamp}",
+            f"  Dataset       : {dataset_path}",
+            f"  Target column : {target_col}",
+            f"  Task type     : {task_type}",
+            f"  Train / Test  : {n_train} / {n_test} samples",
+            f"  CV folds      : {n_folds}",
+            f"  Optuna trials : {optuna_t}",
+            "=" * 72,
+            "",
+        ]
+
+        # â”€â”€ Feature audit section â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        if feat_corr or leaky or suspect:
+            lines += ["FEATURE AUDIT", "-" * 72]
+            if leaky:
+                lines.append(f"  âš  LEAKAGE â€” features REMOVED before training (|r| â‰¥ 0.98):")
+                for f in leaky:
+                    r_val = feat_corr.get(f)
+                    r_str = f"{r_val:+.6f}" if r_val is not None else "N/A"
+                    lines.append(f"      {f:<40}  r = {r_str}")
+                lines.append("")
+            if suspect:
+                lines.append(f"  âš¡ SUSPECT â€” high correlation kept (0.95 â‰¤ |r| < 0.98):")
+                for f in suspect:
+                    r_val = feat_corr.get(f)
+                    r_str = f"{r_val:+.6f}" if r_val is not None else "N/A"
+                    lines.append(f"      {f:<40}  r = {r_str}")
+                lines.append("")
+            if feat_corr:
+                lines.append("  Featureâ€“target correlations (top 20 by |r|):")
+                sorted_corr = sorted(
+                    [(k, v) for k, v in feat_corr.items() if v is not None],
+                    key=lambda x: abs(x[1]), reverse=True,
+                )
+                for fname, rval in sorted_corr[:20]:
+                    r_abs = abs(rval) if (rval is not None and math.isfinite(rval)) else 0.0
+                    bar = "â–ˆ" * max(1, int(r_abs * 20))
+                    tag = "  âš  LEAKY"   if fname in leaky   else \
+                          "  âš¡ suspect" if fname in suspect else ""
+                    lines.append(f"    {fname:<38}  {rval:+.4f}  {bar}{tag}")
+                if len(sorted_corr) > 20:
+                    lines.append(f"    â€¦ and {len(sorted_corr)-20} more features")
+            lines.append("")
+
+        # â”€â”€ Per-model results â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        lines += ["MODEL RESULTS", "-" * 72]
+
+        for r in results:
+            name   = r.get("model",  "unknown")
+            status = r.get("status", "error")
+            family = r.get("family", "")
+
+            if status != "ok":
+                lines.append(f"  âœ— {name}")
+                lines.append(f"      ERROR: {r.get('error', 'unknown error')}")
+                lines.append("")
+                continue
+
+            train_m  = r.get("train", {})
+            test_m   = r.get("test",  {})
+            cv_mean  = r.get("cv_test_mean")
+            cv_std   = r.get("cv_test_std")
+            gap      = r.get("gap")
+            underfit = r.get("underfit", False)
+            score    = r.get("score")
+            elapsed  = r.get("elapsed_sec")
+            params   = r.get("best_params", {})
+
+            cv_str  = f"{cv_mean:.4f} Â± {cv_std:.4f}" if cv_mean is not None else "N/A"
+            gap_str = f"{gap:.4f}" if gap is not None else "N/A"
+            sc_str  = f"{score:.4f}" if score is not None else "N/A"
+            t_str   = f"{elapsed:.1f}s" if elapsed is not None else "N/A"
+
+            overfit_warn = "  âš  overfit"  if gap    is not None and gap    > 0.10 else ""
+            stab_warn    = "  âš  unstable" if cv_std is not None and cv_std > 0.01 else ""
+
+            lines.append(f"  â–º {name}  [{family}]")
+            lines.append(f"      Train metrics  : {train_m}")
+            lines.append(f"      Test  metrics  : {test_m}")
+            lines.append(f"      CV {primary:>8}    : {cv_str}{stab_warn}")
+            lines.append(f"      Overfit gap    : {gap_str}{overfit_warn}")
+            lines.append(f"      Underfit       : {'âš  YES' if underfit else 'No'}")
+            lines.append(f"      Composite score: {sc_str}")
+            lines.append(f"      Training time  : {t_str}")
+            if params:
+                lines.append(f"      Best params    : {params}")
+            lines.append("")
+
+        # â”€â”€ Leaderboard table â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        if leaderboard:
+            lines += [
+                "-" * 72,
+                "  LEADERBOARD  (score = cv_mean âˆ’ 0.5Ã—cv_std âˆ’ overfit_penalty)",
+                "-" * 72,
+                f"  {'Rank':<5} {'Model':<28} {'Family':<10} "
+                f"{'CV mean':>9} {'CV std':>8} {'Hold-out':>9} {'Score':>8}",
+                f"  {'-'*5} {'-'*28} {'-'*10} {'-'*9} {'-'*8} {'-'*9} {'-'*8}",
+            ]
+            for rank, r in enumerate(leaderboard, start=1):
+                if r.get("status") != "ok":
+                    continue
+                cv_m = r.get("cv_test_mean")
+                cv_s = r.get("cv_test_std")
+                ho   = r.get("test", {}).get(primary)
+                sc   = r.get("score")
+                fam  = r.get("family", "")
+                if all(v is not None for v in [cv_m, cv_s, ho, sc]):
+                    lines.append(
+                        f"  {rank:<5} {r['model']:<28} {fam:<10} "
+                        f"{cv_m:>9.4f} {cv_s:>8.4f} {ho:>9.4f} {sc:>8.4f}"
+                    )
+                else:
+                    lines.append(f"  {rank:<5} {r['model']:<28}  (metrics unavailable)")
+            lines.append("")
+
+        report = "\n".join(lines)
+
+        # â”€â”€ Report 2: final best-model report â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        final_lines = [
+            "=" * 72,
+            "  ML ENGINEER â€” FINAL MODEL REPORT  (v2 leakage-aware)",
+            "=" * 72,
+            f"  Run timestamp : {timestamp}",
+            f"  Dataset       : {dataset_path}",
+            f"  Target column : {target_col}",
+            f"  Task type     : {task_type}",
+            f"  Train / Test  : {n_train} / {n_test} samples",
+            f"  CV strategy   : {n_folds}-fold cross-validation",
+            "=" * 72,
+            "",
+        ]
+
+        # Leakage summary at top of final report
+        if leaky:
+            final_lines += [
+                "  âš   DATA LEAKAGE DETECTED & RESOLVED",
+                "     The following features were near-perfect linear predictors",
+                "     of the target and were REMOVED before training.  Results",
+                "     below reflect the clean, leakage-free dataset.",
+                "",
+            ]
+            for f in leaky:
+                r_val = feat_corr.get(f)
+                final_lines.append(
+                    f"     â€¢ {f}  (|r| = {abs(r_val):.6f})"
+                    if r_val is not None else f"     â€¢ {f}"
+                )
+            final_lines.append("")
+
+        if best:
+            train_m  = best.get("train", {})
+            test_m   = best.get("test",  {})
+            cv_mean  = best.get("cv_test_mean")
+            cv_std   = best.get("cv_test_std")
+            gap      = best.get("gap")
+            underfit = best.get("underfit", False)
+            score    = best.get("score")
+            params   = best.get("best_params", {})
+            family   = best.get("family", "")
+
+            cv_str   = f"{cv_mean:.4f} Â± {cv_std:.4f}" if cv_mean is not None else "N/A"
+            gap_flag = "âš  overfitting detected"  if gap    and gap    > 0.10 else "âœ“ within range"
+            uf_flag  = "âš  underfitting detected" if underfit                  else "âœ“ sufficient"
+            stb_flag = "âš  high variance"         if cv_std and cv_std > 0.01 else "âœ“ stable"
+
+            std_pen     = round(0.5 * (cv_std  or 0.0), 6)
+            overfit_pen = round(max(0.0, (gap or 0.0) - 0.10) + (0.10 if underfit else 0.0), 6)
+            cv_contrib  = round(cv_mean or 0.0, 6)
+
+            final_lines += [
+                f"  BEST MODEL : {best.get('model')}  [{family}]",
+                "",
+                "  Performance Summary",
+                "  " + "-" * 44,
+                f"  Train metrics       : {train_m}",
+                f"  Test  metrics       : {test_m}",
+                f"  CV {primary} (mean Â± std) : {cv_str}  â†’  {stb_flag}",
+                (f"  Overfit gap         : {gap:.4f}  {gap_flag}"
+                 if gap is not None else "  Overfit gap: N/A"),
+                f"  Fit quality         : {uf_flag}",
+                "",
+                "  Score Breakdown",
+                "  " + "-" * 44,
+                f"    CV mean                       {cv_contrib:>+10.6f}",
+                f"    âˆ’ stability penalty (0.5Ã—Ïƒ)  {-std_pen:>+10.6f}",
+                f"    âˆ’ overfit/underfit penalty   {-overfit_pen:>+10.6f}",
+                f"    {'â”€'*38}",
+                (f"    Composite score               {score:>+10.6f}"
+                 if score is not None else "    Composite score: N/A"),
+                "",
+                "  Hyperparameters",
+                "  " + "-" * 44,
+            ]
+            if params:
+                for k, v in params.items():
+                    final_lines.append(f"    {k:<36} = {v}")
+            else:
+                final_lines.append("    (default / no tuning applied)")
+
+            if shap_fi:
+                max_imp = max(shap_fi.values()) if shap_fi else 1.0
+                if not math.isfinite(max_imp):
+                    max_imp = 1.0
+                final_lines += [
+                    "",
+                    "  SHAP Feature Importances  (top 15, mean |SHAP| on test set)",
+                    "  " + "-" * 44,
+                ]
+                for i, (feat, imp) in enumerate(list(shap_fi.items())[:15], start=1):
+                    imp_val = imp if math.isfinite(imp) else 0.0
+                    bar = "â–ˆ" * max(1, int(imp_val / max_imp * 24))
+                    tag = "  âš¡ suspect" if feat.split("__")[-1] in suspect else ""
+                    final_lines.append(f"    {i:>2}. {feat:<36} {imp:>8.4f}  {bar}{tag}")
+
+        else:
+            final_lines += [
+                "  âœ— Best model could not be determined â€” all models failed.",
+                "    Check ml_pipeline.log for details.",
+            ]
+
+        final_lines += ["", "=" * 72]
+        final_report = "\n".join(final_lines)
+        return report, final_report
+
+    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    def _build_ml_optuna_code(self, dataset_path: "Path") -> str:
+        """
+        Generate the full v2 ML pipeline script as a string, with the dataset
+        path injected.  The generated script includes:
+
+          â€¢ Automatic data leakage detection & soft-removal (|r| >= 0.98)
+          â€¢ IQR x 3 outlier capping on numeric columns
+          â€¢ Dual preprocessors: StandardScaler for linear, raw for trees
+          â€¢ OHE for low-cardinality cats, OrdinalEncoder for high-card cats
+          â€¢ 5-fold CV with no leakage (clone(pre) inside every fold)
+          â€¢ Optuna HPO with MedianPruner (50 trials per model)
+          â€¢ min_child_samples / min_child_weight in boosting search spaces
+          â€¢ Dynamic MAX_LEAVES cap based on training set size (LGBM overfit fix)
+          â€¢ Per-model family tags for diverse stacking
+          â€¢ DIVERSE stacking ensemble (best-per-family, not top-3 same family)
+          â€¢ Composite score = cv_mean - 0.5 x cv_std - overfit_penalty
+          â€¢ Post-training sanity checks (perfect train R2, high relative RMSE)
+          â€¢ SHAP feature importances for best model
+          â€¢ Full structured logging to ml_pipeline.log
+          â€¢ All results + audit data saved to ml_results.json
+        """
+        ds = str(dataset_path).replace("\\", "\\\\")
+        return f'''"""
+Advanced ML Pipeline v2 â€” Leakage-Aware, Stability-Penalised, Diversity-Enforced
+==================================================================================
+Auto-generated by _build_ml_optuna_code
+Dataset : {ds}
+"""
+
+import os
+import json
+import time
+import logging
+import warnings
+import numpy as np
+import pandas as pd
+
+from pathlib import Path
+from datetime import datetime
+import math
+
+from sklearn.model_selection import (
+    train_test_split, StratifiedKFold, KFold, cross_validate
+)
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import (
+    OneHotEncoder, StandardScaler, OrdinalEncoder
+)
+from sklearn.impute import SimpleImputer
+from sklearn.metrics import (
+    r2_score, mean_squared_error, mean_absolute_error,
+    accuracy_score, f1_score, make_scorer
+)
+from sklearn.linear_model import (
+    LinearRegression, Ridge, Lasso, LogisticRegression
+)
+from sklearn.ensemble import (
+    RandomForestRegressor, RandomForestClassifier,
+    GradientBoostingRegressor, GradientBoostingClassifier,
+    StackingRegressor, StackingClassifier,
+)
+from sklearn.base import clone
+
+warnings.filterwarnings("ignore")
+
+# â”€â”€ Logging â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+LOG_PATH = Path("ml_pipeline.log")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler(LOG_PATH, encoding="utf-8"),
+        logging.StreamHandler(),
+    ],
+)
+log = logging.getLogger(__name__)
+
+# â”€â”€ Config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+RANDOM_SEED          = 42
+np.random.seed(RANDOM_SEED)
+N_CV_FOLDS           = 5
+OPTUNA_TRIALS        = int(os.getenv("ML_OPTUNA_TRIALS", "50"))
+HIGH_CARD_THR        = 15
+IQR_CAP_FACTOR       = 3.0
+ENABLE_STACKING      = True
+ENABLE_SHAP          = True
+LEAKAGE_CORR_THRESH  = 0.98
+PERFECT_R2_THRESH    = 0.9999
+CV_STD_PENALTY_COEFF = 0.5
+N_JOBS               = int(os.getenv("ML_N_JOBS", "1"))
+
+# â”€â”€ Target inference â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+try:
+    from model_transparency import infer_target_column
+    _HAS_TRANSPARENCY = True
+except ImportError:
+    _HAS_TRANSPARENCY = False
+
+def _infer_target(df):
+    if _HAS_TRANSPARENCY:
+        col, conf, reason, _ = infer_target_column(df, verbose=False)
+        if col:
+            try:
+                conf_val = float(conf)
+            except Exception:
+                conf_val = None
+            conf_str = f"{{conf_val:.2f}}" if conf_val is not None else str(conf)
+            log.info(f"Inferred target: '{{col}}' (confidence={{conf_str}}) — {{reason}}")
+            return col
+    col = df.columns[-1]
+    log.warning(f"model_transparency not available; defaulting to last column '{{col}}'.")
+    return col
+
+# â”€â”€ Data loading â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+DATA_PATH = r"{ds}"
+log.info(f"Loading dataset: {{DATA_PATH}}")
+df = pd.read_csv(DATA_PATH)
+log.info(f"Shape: {{df.shape}}  |  Columns: {{list(df.columns)}}")
+
+target_col = _infer_target(df)
+y = df[target_col].copy()
+X = df.drop(columns=[target_col]).copy()
+
+n_unique  = y.nunique(dropna=True)
+task_type = "classification" if n_unique <= 20 else "regression"
+log.info(f"Task: {{task_type}}  |  Target unique values: {{n_unique}}")
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#  FEATURE AUDIT â€” leakage detection via correlation with target
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+num_cols_raw = X.select_dtypes(include=[np.number]).columns.tolist()
+cat_cols_raw = [c for c in X.columns if c not in num_cols_raw]
+
+leaky_features   = []
+suspect_features = []
+feature_corr     = {{}}
+
+if task_type == "regression":
+    log.info("â”€â”€ Feature Audit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€")
+    for col in num_cols_raw:
+        try:
+            r = float(np.corrcoef(X[col].fillna(X[col].median()), y)[0, 1])
+            feature_corr[col] = round(r, 6)
+            abs_r = abs(r)
+            if abs_r >= LEAKAGE_CORR_THRESH:
+                leaky_features.append(col)
+                log.warning(f"  âš  LEAKAGE  {{col:<35}} |r| = {{abs_r:.6f}}")
+            elif abs_r >= 0.95:
+                suspect_features.append(col)
+                log.info(f"  âš¡ Suspect  {{col:<35}} |r| = {{abs_r:.6f}}")
+        except Exception:
+            feature_corr[col] = None
+
+    if leaky_features:
+        log.warning(
+            f"\\n{'!'*60}\\n"
+            f"  DATA LEAKAGE: {{len(leaky_features)}} feature(s) REMOVED\\n"
+            f"    {{leaky_features}}\\n"
+            f"{'!'*60}"
+        )
+        X = X.drop(columns=leaky_features)
+        num_cols_raw = [c for c in num_cols_raw if c not in leaky_features]
+
+# â”€â”€ Outlier capping â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+def cap_outliers(df_in, cols, factor=IQR_CAP_FACTOR):
+    df_out = df_in.copy()
+    for c in cols:
+        q1, q3 = df_out[c].quantile(0.25), df_out[c].quantile(0.75)
+        iqr = q3 - q1
+        if iqr > 0:
+            df_out[c] = df_out[c].clip(q1 - factor * iqr, q3 + factor * iqr)
+    return df_out
+
+X = cap_outliers(X, num_cols_raw)
+log.info(f"Outlier capping: {{len(num_cols_raw)}} numeric cols (IQRÃ—{{IQR_CAP_FACTOR}})")
+
+# â”€â”€ Categorical cardinality split â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+low_cat  = [c for c in cat_cols_raw if X[c].nunique() <= HIGH_CARD_THR]
+high_cat = [c for c in cat_cols_raw if X[c].nunique() >  HIGH_CARD_THR]
+log.info(f"Numeric: {{len(num_cols_raw)}} | Low cats: {{len(low_cat)}} | High cats: {{len(high_cat)}}")
+
+# â”€â”€ Preprocessors â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+def _make_ohe():
+    try:
+        return OneHotEncoder(handle_unknown="ignore", sparse_output=False)
+    except TypeError:
+        return OneHotEncoder(handle_unknown="ignore", sparse=False)
+
+def build_preprocessor(scale_numeric: bool) -> ColumnTransformer:
+    num_steps = [("imputer", SimpleImputer(strategy="median"))]
+    if scale_numeric:
+        num_steps.append(("scaler", StandardScaler()))
+    transformers = [
+        ("num",      Pipeline(num_steps),                                        num_cols_raw),
+        ("low_cat",  Pipeline([("imputer", SimpleImputer(strategy="most_frequent")),
+                               ("onehot",  _make_ohe())]),                       low_cat),
+        ("high_cat", Pipeline([("imputer", SimpleImputer(strategy="most_frequent")),
+                               ("ordinal", OrdinalEncoder(
+                                   handle_unknown="use_encoded_value",
+                                   unknown_value=-1))]),                          high_cat),
+    ]
+    transformers = [(n, t, c) for n, t, c in transformers if len(c) > 0]
+    return ColumnTransformer(transformers=transformers, remainder="drop")
+
+pre_scaled   = build_preprocessor(scale_numeric=True)
+pre_unscaled = build_preprocessor(scale_numeric=False)
+
+# â”€â”€ Train / test split â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=RANDOM_SEED,
+    stratify=y if task_type == "classification" else None,
+)
+log.info(f"Train: {{len(X_train)}}  |  Test: {{len(X_test)}}")
+
+MAX_LEAVES  = min(256, max(16, len(X_train) // 20))
+cv_splitter = (
+    StratifiedKFold(n_splits=N_CV_FOLDS, shuffle=True, random_state=RANDOM_SEED)
+    if task_type == "classification"
+    else KFold(n_splits=N_CV_FOLDS, shuffle=True, random_state=RANDOM_SEED)
+)
+PRIMARY_METRIC = "r2" if task_type == "regression" else "f1_weighted"
+
+# â”€â”€ Metrics â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+def eval_metrics(y_true, preds):
+    if task_type == "regression":
+        mse = mean_squared_error(y_true, preds)
+        return {{"rmse": float(mse**0.5),
+                 "mae":  float(mean_absolute_error(y_true, preds)),
+                 "r2":   float(r2_score(y_true, preds))}}
+    return {{"accuracy": float(accuracy_score(y_true, preds)),
+             "f1":       float(f1_score(y_true, preds, average="weighted"))}}
+
+def primary(m):
+    return m.get("r2", m.get("f1", -1.0))
+
+def composite_score(cv_mean, cv_std, train_m, test_m):
+    tm, vm   = primary(train_m), primary(test_m)
+    underfit = (task_type == "regression"    and tm < 0.6 and vm < 0.6) or \\
+               (task_type == "classification" and tm < 0.7 and vm < 0.7)
+    gap      = float(tm - vm) if (tm is not None and vm is not None) else 0.0
+    penalty  = max(0.0, gap - 0.10) + (0.10 if underfit else 0.0)
+    std_pen  = CV_STD_PENALTY_COEFF * (cv_std or 0.0)
+    return (cv_mean or 0.0) - std_pen - penalty, gap, underfit, penalty
+
+def sanity_check(name, train_m, test_m, y_arr):
+    tp = primary(train_m)
+    if tp is not None and tp > PERFECT_R2_THRESH:
+        log.warning(f"  âš  PERFECT TRAIN FIT [{{name}}]: {{PRIMARY_METRIC}}={{tp:.8f}} â€” "
+                    f"possible residual leakage.")
+    if task_type == "regression":
+        rmse, y_mean = test_m.get("rmse", 0), float(np.mean(np.abs(y_arr)))
+        if y_mean > 0 and rmse / y_mean > 0.5:
+            log.warning(f"  âš  HIGH RELATIVE ERROR [{{name}}]: RMSE={{rmse:.2f}} "
+                        f"mean|y|={{y_mean:.2f}} ({{rmse/y_mean:.1%}})")
+
+# â”€â”€ Optuna â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+try:
+    import optuna
+    from optuna.pruners import MedianPruner
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    HAS_OPTUNA = True
+except ImportError:
+    HAS_OPTUNA = False
+    log.warning("Optuna not installed â€” default hyperparameters only")
+
+results = []
+
+# â”€â”€ Model runner â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+def run_model(name, builder, space_fn=None, use_scaling=False, family="other"):
+    log.info(f"â–¶ {{name}}  [{{family}}]")
+    t0  = time.time()
+    pre = pre_scaled if use_scaling else pre_unscaled
+    try:
+        best_params = {{}}
+        if HAS_OPTUNA and space_fn is not None:
+            X_tr2, X_val2, y_tr2, y_val2 = train_test_split(
+                X_train, y_train, test_size=0.20, random_state=RANDOM_SEED,
+                stratify=y_train if task_type == "classification" else None,
+            )
+            def objective(trial):
+                params = space_fn(trial)
+                pipe   = Pipeline([("pre", clone(pre)), ("model", builder(params))])
+                pipe.fit(X_tr2, y_tr2)
+                return primary(eval_metrics(y_val2, pipe.predict(X_val2)))
+            study = optuna.create_study(
+                direction="maximize",
+                pruner=MedianPruner(n_startup_trials=10, n_warmup_steps=5),
+            )
+            study.optimize(objective, n_trials=OPTUNA_TRIALS, show_progress_bar=False)
+            best_params = study.best_params
+            log.info(f"   Best params: {{best_params}}")
+
+        scorer  = (make_scorer(r2_score) if task_type == "regression"
+                   else make_scorer(f1_score, average="weighted"))
+        cv_pipe = Pipeline([("pre", clone(pre)), ("model", builder(best_params))])
+        cv_res  = cross_validate(cv_pipe, X_train, y_train, cv=cv_splitter,
+                                 scoring=scorer, return_train_score=True, n_jobs=N_JOBS)
+        cv_mean = float(np.mean(cv_res["test_score"]))
+        cv_std  = float(np.std(cv_res["test_score"]))
+        cv_tr   = float(np.mean(cv_res["train_score"]))
+        log.info(f"   CV: {{cv_mean:.4f}} Â± {{cv_std:.4f}}  (train={{cv_tr:.4f}})")
+
+        final_pipe = Pipeline([("pre", clone(pre)), ("model", builder(best_params))])
+        final_pipe.fit(X_train, y_train)
+        test_m  = eval_metrics(y_test,  final_pipe.predict(X_test))
+        train_m = eval_metrics(y_train, final_pipe.predict(X_train))
+        sanity_check(name, train_m, test_m, y_test.values)
+
+        score, gap, underfit, penalty = composite_score(cv_mean, cv_std, train_m, test_m)
+        elapsed = time.time() - t0
+        log.info(f"   Hold-out: {{primary(test_m):.4f}}  gap={{gap:.4f}}  score={{score:.4f}}  {{elapsed:.1f}}s")
+
+        results.append({{
+            "model":         name,
+            "family":        family,
+            "status":        "ok",
+            "best_params":   best_params,
+            "train":         train_m,
+            "test":          test_m,
+            "cv_test_mean":  cv_mean,
+            "cv_test_std":   cv_std,
+            "cv_train_mean": cv_tr,
+            "gap":           gap,
+            "underfit":      underfit,
+            "score":         float(score),
+            "elapsed_sec":   elapsed,
+            "_pipe":         final_pipe,
+        }})
+    except Exception as e:
+        log.error(f"   FAILED: {{e}}", exc_info=True)
+        results.append({{"model": name, "family": family, "status": "error", "error": str(e)}})
+
+# â”€â”€ Model registry â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+if task_type == "regression":
+    run_model("LinearRegression", lambda p: LinearRegression(),
+              use_scaling=True, family="linear")
+    run_model("Ridge",
+              lambda p: Ridge(alpha=p.get("alpha", 1.0), random_state=RANDOM_SEED),
+              lambda t: {{"alpha": t.suggest_float("alpha", 1e-3, 50.0, log=True)}},
+              use_scaling=True, family="linear")
+    run_model("Lasso",
+              lambda p: Lasso(alpha=p.get("alpha", 0.01), random_state=RANDOM_SEED,
+                              max_iter=5000),
+              lambda t: {{"alpha": t.suggest_float("alpha", 1e-5, 1.0, log=True)}},
+              use_scaling=True, family="linear")
+    run_model("RandomForestRegressor",
+              lambda p: RandomForestRegressor(
+                  n_estimators=p.get("n_estimators", 500),
+                  max_depth=p.get("max_depth", None),
+                  min_samples_leaf=p.get("min_samples_leaf", 2),
+                  max_features=p.get("max_features", "sqrt"),
+                  random_state=RANDOM_SEED, n_jobs=N_JOBS),
+              lambda t: {{
+                  "n_estimators":     t.suggest_int("n_estimators", 200, 800),
+                  "max_depth":        t.suggest_int("max_depth", 3, 20),
+                  "min_samples_leaf": t.suggest_int("min_samples_leaf", 2, 15),
+                  "max_features":     t.suggest_categorical("max_features",
+                                          ["sqrt", "log2", 0.5, 0.8]),
+              }}, family="tree")
+    run_model("GradientBoostingRegressor",
+              lambda p: GradientBoostingRegressor(
+                  n_estimators=p.get("n_estimators", 300),
+                  learning_rate=p.get("learning_rate", 0.05),
+                  max_depth=p.get("max_depth", 3),
+                  subsample=p.get("subsample", 0.8),
+                  min_samples_leaf=p.get("min_samples_leaf", 5),
+                  random_state=RANDOM_SEED),
+              lambda t: {{
+                  "n_estimators":     t.suggest_int("n_estimators", 200, 800),
+                  "learning_rate":    t.suggest_float("learning_rate", 0.005, 0.2, log=True),
+                  "max_depth":        t.suggest_int("max_depth", 2, 6),
+                  "subsample":        t.suggest_float("subsample", 0.6, 1.0),
+                  "min_samples_leaf": t.suggest_int("min_samples_leaf", 2, 20),
+              }}, family="boosting")
+else:
+    run_model("LogisticRegression",
+              lambda p: LogisticRegression(C=p.get("C", 1.0), max_iter=3000,
+                                           random_state=RANDOM_SEED),
+              lambda t: {{"C": t.suggest_float("C", 1e-3, 10.0, log=True)}},
+              use_scaling=True, family="linear")
+    run_model("RandomForestClassifier",
+              lambda p: RandomForestClassifier(
+                  n_estimators=p.get("n_estimators", 500),
+                  max_depth=p.get("max_depth", None),
+                  min_samples_leaf=p.get("min_samples_leaf", 2),
+                  max_features=p.get("max_features", "sqrt"),
+                  random_state=RANDOM_SEED, n_jobs=N_JOBS),
+              lambda t: {{
+                  "n_estimators":     t.suggest_int("n_estimators", 200, 800),
+                  "max_depth":        t.suggest_int("max_depth", 3, 20),
+                  "min_samples_leaf": t.suggest_int("min_samples_leaf", 2, 15),
+                  "max_features":     t.suggest_categorical("max_features", ["sqrt", "log2"]),
+              }}, family="tree")
+    run_model("GradientBoostingClassifier",
+              lambda p: GradientBoostingClassifier(
+                  n_estimators=p.get("n_estimators", 300),
+                  learning_rate=p.get("learning_rate", 0.05),
+                  max_depth=p.get("max_depth", 3),
+                  subsample=p.get("subsample", 0.8),
+                  min_samples_leaf=p.get("min_samples_leaf", 5),
+                  random_state=RANDOM_SEED),
+              lambda t: {{
+                  "n_estimators":     t.suggest_int("n_estimators", 200, 800),
+                  "learning_rate":    t.suggest_float("learning_rate", 0.005, 0.2, log=True),
+                  "max_depth":        t.suggest_int("max_depth", 2, 6),
+                  "subsample":        t.suggest_float("subsample", 0.6, 1.0),
+                  "min_samples_leaf": t.suggest_int("min_samples_leaf", 2, 20),
+              }}, family="boosting")
+
+# â”€â”€ LightGBM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+try:
+    import lightgbm as lgb
+    _lgb_kw = dict(random_state=RANDOM_SEED, n_jobs=N_JOBS, verbose=-1)
+    if task_type == "regression":
+        run_model("LGBMRegressor",
+                  lambda p: lgb.LGBMRegressor(
+                      n_estimators=p.get("n_estimators", 400),
+                      learning_rate=p.get("learning_rate", 0.05),
+                      num_leaves=p.get("num_leaves", min(31, MAX_LEAVES)),
+                      min_child_samples=p.get("min_child_samples", 20),
+                      subsample=p.get("subsample", 0.8),
+                      colsample_bytree=p.get("colsample_bytree", 0.8),
+                      reg_alpha=p.get("reg_alpha", 0.1),
+                      reg_lambda=p.get("reg_lambda", 1.0), **_lgb_kw),
+                  lambda t: {{
+                      "n_estimators":      t.suggest_int("n_estimators", 100, 800),
+                      "learning_rate":     t.suggest_float("learning_rate", 0.01, 0.15, log=True),
+                      "num_leaves":        t.suggest_int("num_leaves", 8, MAX_LEAVES),
+                      "min_child_samples": t.suggest_int("min_child_samples", 10, 100),
+                      "subsample":         t.suggest_float("subsample", 0.5, 1.0),
+                      "colsample_bytree":  t.suggest_float("colsample_bytree", 0.5, 1.0),
+                      "reg_alpha":         t.suggest_float("reg_alpha", 0.01, 10.0, log=True),
+                      "reg_lambda":        t.suggest_float("reg_lambda", 0.01, 10.0, log=True),
+                  }}, family="boosting")
+    else:
+        run_model("LGBMClassifier",
+                  lambda p: lgb.LGBMClassifier(
+                      n_estimators=p.get("n_estimators", 400),
+                      learning_rate=p.get("learning_rate", 0.05),
+                      num_leaves=p.get("num_leaves", min(31, MAX_LEAVES)),
+                      min_child_samples=p.get("min_child_samples", 20),
+                      subsample=p.get("subsample", 0.8),
+                      colsample_bytree=p.get("colsample_bytree", 0.8),
+                      reg_alpha=p.get("reg_alpha", 0.1),
+                      reg_lambda=p.get("reg_lambda", 1.0), **_lgb_kw),
+                  lambda t: {{
+                      "n_estimators":      t.suggest_int("n_estimators", 100, 800),
+                      "learning_rate":     t.suggest_float("learning_rate", 0.01, 0.15, log=True),
+                      "num_leaves":        t.suggest_int("num_leaves", 8, MAX_LEAVES),
+                      "min_child_samples": t.suggest_int("min_child_samples", 10, 100),
+                      "subsample":         t.suggest_float("subsample", 0.5, 1.0),
+                      "colsample_bytree":  t.suggest_float("colsample_bytree", 0.5, 1.0),
+                      "reg_alpha":         t.suggest_float("reg_alpha", 0.01, 10.0, log=True),
+                      "reg_lambda":        t.suggest_float("reg_lambda", 0.01, 10.0, log=True),
+                  }}, family="boosting")
+    log.info("LightGBM added.")
+except ImportError:
+    log.warning("LightGBM not installed â€” skipping.")
+
+# â”€â”€ XGBoost â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+try:
+    import xgboost as xgb
+    _xgb_kw = dict(random_state=RANDOM_SEED, n_jobs=N_JOBS, verbosity=0)
+    if task_type == "regression":
+        run_model("XGBRegressor",
+                  lambda p: xgb.XGBRegressor(
+                      n_estimators=p.get("n_estimators", 400),
+                      learning_rate=p.get("learning_rate", 0.05),
+                      max_depth=p.get("max_depth", 4),
+                      min_child_weight=p.get("min_child_weight", 5),
+                      subsample=p.get("subsample", 0.8),
+                      colsample_bytree=p.get("colsample_bytree", 0.8),
+                      reg_alpha=p.get("reg_alpha", 0.1),
+                      reg_lambda=p.get("reg_lambda", 1.0),
+                      eval_metric="rmse", **_xgb_kw),
+                  lambda t: {{
+                      "n_estimators":     t.suggest_int("n_estimators", 100, 800),
+                      "learning_rate":    t.suggest_float("learning_rate", 0.01, 0.15, log=True),
+                      "max_depth":        t.suggest_int("max_depth", 2, 8),
+                      "min_child_weight": t.suggest_int("min_child_weight", 3, 30),
+                      "subsample":        t.suggest_float("subsample", 0.5, 1.0),
+                      "colsample_bytree": t.suggest_float("colsample_bytree", 0.5, 1.0),
+                      "reg_alpha":        t.suggest_float("reg_alpha", 0.01, 10.0, log=True),
+                      "reg_lambda":       t.suggest_float("reg_lambda", 0.01, 10.0, log=True),
+                  }}, family="boosting")
+    else:
+        run_model("XGBClassifier",
+                  lambda p: xgb.XGBClassifier(
+                      n_estimators=p.get("n_estimators", 400),
+                      learning_rate=p.get("learning_rate", 0.05),
+                      max_depth=p.get("max_depth", 4),
+                      min_child_weight=p.get("min_child_weight", 5),
+                      subsample=p.get("subsample", 0.8),
+                      colsample_bytree=p.get("colsample_bytree", 0.8),
+                      reg_alpha=p.get("reg_alpha", 0.1),
+                      reg_lambda=p.get("reg_lambda", 1.0),
+                      eval_metric="logloss", **_xgb_kw),
+                  lambda t: {{
+                      "n_estimators":     t.suggest_int("n_estimators", 100, 800),
+                      "learning_rate":    t.suggest_float("learning_rate", 0.01, 0.15, log=True),
+                      "max_depth":        t.suggest_int("max_depth", 2, 8),
+                      "min_child_weight": t.suggest_int("min_child_weight", 3, 30),
+                      "subsample":        t.suggest_float("subsample", 0.5, 1.0),
+                      "colsample_bytree": t.suggest_float("colsample_bytree", 0.5, 1.0),
+                      "reg_alpha":        t.suggest_float("reg_alpha", 0.01, 10.0, log=True),
+                      "reg_lambda":       t.suggest_float("reg_lambda", 0.01, 10.0, log=True),
+                  }}, family="boosting")
+    log.info("XGBoost added.")
+except ImportError:
+    log.warning("XGBoost not installed â€” skipping.")
+
+# â”€â”€ CatBoost â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+try:
+    from catboost import CatBoostRegressor, CatBoostClassifier
+    if task_type == "regression":
+        run_model("CatBoostRegressor",
+                  lambda p: CatBoostRegressor(
+                      iterations=p.get("iterations", 600),
+                      learning_rate=p.get("learning_rate", 0.05),
+                      depth=p.get("depth", 5),
+                      l2_leaf_reg=p.get("l2_leaf_reg", 5.0),
+                      min_data_in_leaf=p.get("min_data_in_leaf", 10),
+                      random_seed=RANDOM_SEED, verbose=False),
+                  lambda t: {{
+                      "iterations":       t.suggest_int("iterations", 200, 1000),
+                      "learning_rate":    t.suggest_float("learning_rate", 0.01, 0.15, log=True),
+                      "depth":            t.suggest_int("depth", 3, 8),
+                      "l2_leaf_reg":      t.suggest_float("l2_leaf_reg", 1.0, 30.0, log=True),
+                      "min_data_in_leaf": t.suggest_int("min_data_in_leaf", 5, 50),
+                  }}, family="boosting")
+    else:
+        run_model("CatBoostClassifier",
+                  lambda p: CatBoostClassifier(
+                      iterations=p.get("iterations", 600),
+                      learning_rate=p.get("learning_rate", 0.05),
+                      depth=p.get("depth", 5),
+                      l2_leaf_reg=p.get("l2_leaf_reg", 5.0),
+                      min_data_in_leaf=p.get("min_data_in_leaf", 10),
+                      random_seed=RANDOM_SEED, verbose=False),
+                  lambda t: {{
+                      "iterations":       t.suggest_int("iterations", 200, 1000),
+                      "learning_rate":    t.suggest_float("learning_rate", 0.01, 0.15, log=True),
+                      "depth":            t.suggest_int("depth", 3, 8),
+                      "l2_leaf_reg":      t.suggest_float("l2_leaf_reg", 1.0, 30.0, log=True),
+                      "min_data_in_leaf": t.suggest_int("min_data_in_leaf", 5, 50),
+                  }}, family="boosting")
+    log.info("CatBoost added.")
+except ImportError:
+    log.warning("CatBoost not installed â€” skipping.")
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#  DIVERSE Stacking Ensemble â€” one best model per family
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+ok_results = sorted(
+    [r for r in results if r.get("status") == "ok" and r.get("score") is not None],
+    key=lambda r: r["score"], reverse=True,
+)
+
+if ENABLE_STACKING and len(ok_results) >= 3:
+    log.info("â–¶ Building DIVERSE stacking ensembleâ€¦")
+    try:
+        family_best: dict = {{}}
+        for r in ok_results:
+            fam = r.get("family", "other")
+            if fam not in family_best:
+                family_best[fam] = r
+
+        stack_members = list(family_best.values())
+        used = {{r["model"] for r in stack_members}}
+        for r in ok_results:
+            if len(stack_members) >= 3:
+                break
+            if r["model"] not in used:
+                stack_members.append(r)
+                used.add(r["model"])
+
+        log.info(f"   Members: {{[r['model'] for r in stack_members]}}")
+        estimators = [(r["model"], r["_pipe"]) for r in stack_members]
+        scorer     = (make_scorer(r2_score) if task_type == "regression"
+                      else make_scorer(f1_score, average="weighted"))
+
+        if task_type == "regression":
+            stack = StackingRegressor(estimators=estimators,
+                                      final_estimator=Ridge(alpha=1.0),
+                                      cv=5, n_jobs=N_JOBS)
+        else:
+            stack = StackingClassifier(estimators=estimators,
+                                       final_estimator=LogisticRegression(
+                                           max_iter=1000, random_state=RANDOM_SEED),
+                                       cv=5, n_jobs=N_JOBS)
+
+        stack.fit(X_train, y_train)
+        test_m  = eval_metrics(y_test,  stack.predict(X_test))
+        train_m = eval_metrics(y_train, stack.predict(X_train))
+        sanity_check("StackingEnsemble", train_m, test_m, y_test.values)
+
+        cv_res = cross_validate(clone(stack), X_train, y_train, cv=cv_splitter,
+                                scoring=scorer, return_train_score=True, n_jobs=1)
+        cv_m  = float(np.mean(cv_res["test_score"]))
+        cv_sd = float(np.std(cv_res["test_score"]))
+        score, gap, underfit, _ = composite_score(cv_m, cv_sd, train_m, test_m)
+        log.info(f"   Stacking CV: {{cv_m:.4f}} Â± {{cv_sd:.4f}}  score={{score:.4f}}")
+
+        stacking_entry = {{
+            "model":        "StackingEnsemble",
+            "family":       "ensemble",
+            "status":       "ok",
+            "best_params":  {{"base_models": [r["model"] for r in stack_members]}},
+            "train":        train_m,
+            "test":         test_m,
+            "cv_test_mean": cv_m,
+            "cv_test_std":  cv_sd,
+            "gap":          gap,
+            "underfit":     underfit,
+            "score":        float(score),
+            "_pipe":        stack,
+        }}
+        results.append(stacking_entry)
+        ok_results.append(stacking_entry)
+    except Exception as e:
+        log.error(f"Stacking failed: {{e}}", exc_info=True)
+
+ok_results.sort(key=lambda r: r["score"], reverse=True)
+best = ok_results[0] if ok_results else None
+
+if best:
+    log.info(f"BEST: {{best['model']}} [{{best.get('family','')}}]  "
+             f"score={{best['score']:.4f}}  cv={{best.get('cv_test_mean','?'):.4f}}")
+
+# â”€â”€ SHAP â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+feature_importances = {{}}
+if ENABLE_SHAP and best and "_pipe" in best:
+    try:
+        import shap
+        pipe     = best["_pipe"]
+        pre_step = pipe.named_steps.get("pre")
+        model    = pipe.named_steps.get("model")
+        if pre_step and model:
+            X_test_t  = pre_step.transform(X_test)
+            explainer = shap.Explainer(model, X_test_t)
+            shap_vals = explainer(X_test_t, check_additivity=False)
+            try:
+                feat_names = pre_step.get_feature_names_out()
+            except Exception:
+                feat_names = np.array([f"f{{i}}" for i in range(X_test_t.shape[1])])
+            mean_abs = np.abs(
+                shap_vals.values if hasattr(shap_vals, "values") else shap_vals
+            ).mean(axis=0)
+            if mean_abs.ndim > 1:
+                mean_abs = mean_abs.mean(axis=-1)
+            feature_importances = dict(sorted(
+                zip(feat_names.tolist(), mean_abs.tolist()),
+                key=lambda x: x[1], reverse=True,
+            ))
+            log.info(f"SHAP top-10: {{list(feature_importances.keys())[:10]}}")
+    except ImportError:
+        log.warning("shap not installed â€” skipping.")
+    except Exception as e:
+        log.warning(f"SHAP failed: {{e}}")
+
+# â”€â”€ Output payload â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+def _clean(r):
+    return {{k: v for k, v in r.items() if k != "_pipe"}}
+
+payload = {{
+    "run_timestamp":            datetime.utcnow().isoformat() + "Z",
+    "task_type":                task_type,
+    "target_col":               target_col,
+    "n_train":                  int(len(X_train)),
+    "n_test":                   int(len(X_test)),
+    "n_cv_folds":               N_CV_FOLDS,
+    "optuna_trials":            OPTUNA_TRIALS,
+    "leaky_features_removed":   leaky_features,
+    "suspect_features":         suspect_features,
+    "feature_target_corr":      feature_corr,
+    "results":                  [_clean(r) for r in results],
+    "leaderboard":              [_clean(r) for r in ok_results[:10]],
+    "best_model":               _clean(best) if best else None,
+    "feature_importances_shap": feature_importances,
+}}
+
+print("__ML_RESULTS_BEGIN__")
+print(json.dumps(payload, indent=2, default=str))
+print("__ML_RESULTS_END__")
+
+out_path = Path("ml_results.json")
+out_path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+log.info(f"Results saved to {{out_path.resolve()}}")
+log.info("Pipeline complete.")
+'''
 
     def _get_gemini_client(self):
         if self._GEMINI_CLIENT is not None:
@@ -254,6 +1343,16 @@ class MLEngineerAgent(BaseAgent):
                 break
         return "\n\n".join(blocks).strip()
 
+    def _find_output_txt(self) -> Path | None:
+        repo_out = self._repo_root() / "shared" / "output.txt"
+        if workspace.is_initialized and workspace.project_root:
+            ws_out = Path(workspace.project_root) / "shared" / "output.txt"
+            if ws_out.exists():
+                return ws_out
+        if repo_out.exists():
+            return repo_out
+        return None
+
     def _build_training_code(self, dataset_path: Path, rag_context: str) -> str:
         ds = str(dataset_path).replace("\\", "\\\\")
         imbalance_flag = "class imbalance" in rag_context.lower() or "imbalance" in rag_context.lower()
@@ -321,13 +1420,13 @@ if task_type == "classification":
         n_estimators=200,
         random_state=42,
         {class_weight_line}
-        n_jobs=-1,
+        n_jobs=N_JOBS,
     )
 else:
     model = RandomForestRegressor(
         n_estimators=200,
         random_state=42,
-        n_jobs=-1,
+        n_jobs=N_JOBS,
     )
 
 X_train, X_test, y_train, y_test = train_test_split(
@@ -467,216 +1566,53 @@ for k, v in null_rate.items():
             return None
 
         if any(k in c for k in ["model", "train", "eda", "dataset", "pipeline", "predict", "classification", "deploy"]):
-            ds_path = self.find_latest_uploaded_dataset()
-            if not ds_path:
+            eng_path = self.find_latest_engineered_dataset()
+            raw_path = self._find_latest_raw_dataset()
+            if not raw_path and not eng_path:
                 await self.report(
-                    "No uploaded dataset found in shared/datasets. Upload a file first.",
+                    "No dataset found in shared/datasets. Upload a file first.",
                     task_id,
                 )
                 return None
 
-            rag_context = self._collect_rag_context()
-            if workspace.is_initialized:
-                workspace.write("ml_engineer", "rag_context.txt", rag_context or "[no rag context found]", task_id)
+            await self.report("ML Engineer multi-model Optuna training starting (raw + engineered).", task_id)
 
-            llm_code, llm_status, llm_raw = await self._build_training_code_with_llm(ds_path, rag_context)
-            used_llm = bool(llm_code.strip())
-            code = llm_code or self._build_training_code(ds_path, rag_context)
-            code, sanitize_notes = self._sanitize_training_code(code)
-            retry_started = False
-            syntax_ok, syntax_err = self._validate_python_code(code)
+            raw_payload = None
+            eng_payload = None
+            if raw_path:
+                raw_payload = await self._run_training_for_dataset(Path(raw_path), "raw", task_id)
+            if eng_path:
+                eng_payload = await self._run_training_for_dataset(Path(eng_path), "engineered", task_id)
+
+            # Preserve legacy output names using engineered if available, else raw
             if workspace.is_initialized:
-                workspace.write("ml_engineer", "training_pipeline.py", code, task_id)
-                fe_code = self._build_feature_engineering_code(ds_path)
-                workspace.write("ml_engineer", "feature_engineering.py", fe_code, task_id)
-                workspace.write(
-                    "ml_engineer",
-                    "llm_status.txt",
-                    f"training_pipeline: {llm_status}\n"
-                    f"feature_engineering: LLM disabled\n"
-                    f"sanitize_notes: {sanitize_notes}\n"
-                    f"initial_syntax_ok: {str(syntax_ok).lower()}\n"
-                    f"initial_syntax_error: {syntax_err or '[none]'}\n",
-                    task_id,
-                )
-                raw_payload = (
-                    "## training_pipeline raw\n"
-                    + (llm_raw or "[no raw response]")
-                    + "\n\n## feature_engineering raw\n"
-                    + "[LLM disabled]"
-                    + "\n"
-                )
-                workspace.write("ml_engineer", "llm_raw.txt", raw_payload, task_id)
+                pass
+
+            if workspace.is_initialized:
+                if eng_payload and eng_path:
+                    report, final_report = self._build_ml_reports(Path(eng_path), eng_payload)
+                    workspace.write("ml_engineer", "report.txt", report, task_id)
+                    workspace.write("ml_engineer", "final_report.txt", final_report, task_id)
+                elif raw_payload and raw_path:
+                    report, final_report = self._build_ml_reports(Path(raw_path), raw_payload)
+                    workspace.write("ml_engineer", "report.txt", report, task_id)
+                    workspace.write("ml_engineer", "final_report.txt", final_report, task_id)
+
+            comparison = self._build_comparison_report(raw_payload, eng_payload, raw_path, eng_path)
+            if workspace.is_initialized:
+                workspace.write("ml_engineer", "comparison.txt", comparison, task_id)
 
             await self.report(
-                "ML Engineer training started in Jupyter kernel.\n"
-                "Code saved: ml_engineer/training_pipeline.py\n"
-                "Feature engineering saved: ml_engineer/feature_engineering.py\n"
-                "RAG context saved: ml_engineer/rag_context.txt",
-                task_id,
-            )
-
-            if used_llm and not syntax_ok:
-                retry_started = True
-                fix_code, fix_status, fix_raw = await self._fix_training_code_with_llm(
-                    ds_path,
-                    rag_context,
-                    code,
-                    syntax_err,
-                )
-                if fix_code.strip():
-                    code = fix_code
-                    if workspace.is_initialized:
-                        workspace.write("ml_engineer", "training_pipeline.py", code, task_id)
-                        workspace.append(
-                            "ml_engineer",
-                            "llm_status.txt",
-                            f"training_pipeline_fix_0: {fix_status}\nretry_started: true",
-                            task_id,
-                        )
-                        workspace.append(
-                            "ml_engineer",
-                            "llm_raw.txt",
-                            "\n\n## training_pipeline fix raw\n" + (fix_raw or "[no raw response]"),
-                            task_id,
-                        )
-                else:
-                    if workspace.is_initialized:
-                        workspace.append(
-                            "ml_engineer",
-                            "llm_status.txt",
-                            "retry_started: true",
-                            task_id,
-                        )
-
-            exec_result = await self.run_code_in_jupyter_kernel(code, timeout_s=600)
-            if not exec_result.get("success") and used_llm:
-                if workspace.is_initialized:
-                    workspace.write(
-                        "ml_engineer",
-                        "last_exec_error.txt",
-                        exec_result.get("output", "") or "[no output]",
-                        task_id,
-                    )
-                    workspace.append(
-                        "ml_engineer",
-                        "llm_status.txt",
-                        "retry_started: true",
-                        task_id,
-                    )
-                fix_attempts_raw = (os.getenv("GROQ_CODE_FIX_RETRIES") or "3").strip()
-                try:
-                    fix_attempts = max(0, int(fix_attempts_raw))
-                except Exception:
-                    fix_attempts = 1
-                for attempt in range(fix_attempts):
-                    await self.report(
-                        f"ML Engineer retry {attempt+1}/{fix_attempts}: sending error to LLM for fix.",
-                        task_id,
-                    )
-                    retry_started = True
-                    if workspace.is_initialized:
-                        workspace.append(
-                            "ml_engineer",
-                            "llm_raw.txt",
-                            f"\n\n## training_pipeline fix input error (attempt {attempt+1})\n"
-                            + (exec_result.get("output", "") or "[no output]"),
-                            task_id,
-                        )
-                    fix_code, fix_status, fix_raw = await self._fix_training_code_with_llm(
-                        ds_path,
-                        rag_context,
-                        code,
-                        exec_result.get("output", ""),
-                    )
-                    if workspace.is_initialized:
-                        workspace.append(
-                            "ml_engineer",
-                            "llm_status.txt",
-                            f"training_pipeline_fix_{attempt+1}: {fix_status}",
-                            task_id,
-                        )
-                        workspace.append(
-                            "ml_engineer",
-                            "llm_raw.txt",
-                            f"\n\n## training_pipeline fix raw (attempt {attempt+1})\n"
-                            + (fix_raw or "[no raw response]"),
-                            task_id,
-                        )
-                    if fix_code.strip():
-                        code = fix_code
-                        code, sanitize_fix_notes = self._sanitize_training_code(code)
-                        used_llm = True
-                        if workspace.is_initialized:
-                            workspace.write("ml_engineer", "training_pipeline.py", code, task_id)
-                            workspace.append(
-                                "ml_engineer",
-                                "llm_status.txt",
-                                f"sanitize_notes_fix_{attempt+1}: {sanitize_fix_notes}",
-                                task_id,
-                            )
-                        await self.report(
-                            f"ML Engineer retry {attempt+1}/{fix_attempts}: running corrected code.",
-                            task_id,
-                        )
-                    else:
-                        if workspace.is_initialized:
-                            workspace.append(
-                                "ml_engineer",
-                                "llm_status.txt",
-                                f"training_pipeline_fix_{attempt+1}_note: empty code from LLM",
-                                task_id,
-                            )
-
-                    exec_result = await self.run_code_in_jupyter_kernel(code, timeout_s=600)
-                    if workspace.is_initialized:
-                        workspace.write(
-                            "ml_engineer",
-                            "last_exec_error.txt",
-                            exec_result.get("output", "") or "[no output]",
-                            task_id,
-                        )
-                        workspace.append(
-                            "ml_engineer",
-                            "llm_raw.txt",
-                            f"\n\n## training_pipeline fix error (attempt {attempt+1})\n"
-                            + (exec_result.get("output", "") or "[no output]"),
-                            task_id,
-                        )
-                    if exec_result.get("success"):
-                        break
-            elif workspace.is_initialized and used_llm:
-                workspace.append(
-                    "ml_engineer",
-                    "llm_status.txt",
-                    f"retry_started: {str(retry_started).lower()}",
-                    task_id,
-                )
-            output = exec_result.get("output", "") or "[no output]"
-            run_ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
-            if workspace.is_initialized:
-                workspace.write("ml_engineer", "jupyter_output.txt", output, task_id)
-                report = (
-                    f"# ML Engineer Training Report\n\n"
-                    f"Dataset: `{ds_path}`\n"
-                    f"Runner: {exec_result.get('runner')}\n"
-                    f"Timestamp: {run_ts}\n\n"
-                    f"LLM used: {str(used_llm).lower()}\n\n"
-                    f"Feature engineering script: `ml_engineer/feature_engineering.py`\n\n"
-                    f"## RAG Context Used\n```\n{rag_context or '[none]'}\n```\n\n"
-                    f"## Raw Execution Output\n```\n{output}\n```\n"
-                )
-                workspace.write("ml_engineer", "report.md", report, task_id)
-
-            await self.report(
-                "ML Engineer completed training.\n"
-                "Saved: ml_engineer/training_pipeline.py, ml_engineer/feature_engineering.py, ml_engineer/jupyter_output.txt, ml_engineer/report.md\n"
-                f"Execution runner: {exec_result.get('runner')} | success={exec_result.get('success')}",
+                "ML Engineer completed multi-model Optuna training.\n"
+                "Saved: ml_engineer/jupyter_output_raw.txt, ml_engineer/jupyter_output_engineered.txt, "
+                "ml_engineer/report_raw.txt, ml_engineer/final_report_raw.txt, "
+                "ml_engineer/report_engineered.txt, ml_engineer/final_report_engineered.txt, "
+                "ml_engineer/comparison.txt",
                 task_id,
             )
             await self.message(
                 "orchestrator",
-                "ML Engineer completed training. Artifacts and report.md are ready.",
+                "ML Engineer completed Optuna training on raw + engineered datasets. Comparison report ready.",
                 task_id,
             )
             return None

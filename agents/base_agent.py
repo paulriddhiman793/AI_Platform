@@ -26,6 +26,12 @@ class BaseAgent(ABC):
     _LLM_LOCK: asyncio.Lock | None = None
     _LLM_SEMAPHORE: asyncio.Semaphore | None = None
     _LLM_LAST_CALL_TS: float = 0.0
+    _LLM_COOLDOWN_UNTIL: float = 0.0
+    _GROQ_REQ_TIMES: list[float] = []
+    _GROQ_TOKEN_WINDOW: list[tuple[float, int]] = []
+    _GROQ_DAY: str | None = None
+    _GROQ_DAY_COUNT: int = 0
+    _GROQ_DAY_TOKENS: int = 0
 
     def __init__(self):
         self.inbox: asyncio.Queue = bus.subscribe(f"agent.{self.AGENT_ID}")
@@ -51,6 +57,18 @@ class BaseAgent(ABC):
 
         self.status = "working"
         await publish_status(self.AGENT_ID, "working")
+        start_ts = time.time()
+        try:
+            from tools import state_store
+            state_store.log_run_event(self.AGENT_ID, "task_start", payload.get("task_id"), payload.get("content"))
+            state_store.update_task_state(payload.get("task_id"), {
+                "agent_id": self.AGENT_ID,
+                "status": "working",
+                "started_at": start_ts,
+                "content_preview": str(payload.get("content", ""))[:200],
+            })
+        except Exception:
+            pass
         try:
             print(
                 f"[{self.AGENT_ID}] Received task from {payload.get('from', '?')}: "
@@ -59,6 +77,19 @@ class BaseAgent(ABC):
             result = await self.handle_task(payload)
             if result:
                 await self.report(result, task_id=payload.get("task_id"))
+            try:
+                from tools import state_store
+                state_store.log_run_event(self.AGENT_ID, "task_complete", payload.get("task_id"), payload.get("content"), {
+                    "duration_sec": round(time.time() - start_ts, 3),
+                })
+                state_store.update_task_state(payload.get("task_id"), {
+                    "agent_id": self.AGENT_ID,
+                    "status": "completed",
+                    "ended_at": time.time(),
+                    "duration_sec": round(time.time() - start_ts, 3),
+                })
+            except Exception:
+                pass
         except Exception as exc:
             print(f"[{self.AGENT_ID}] ERROR in handle_task: {exc}")
             self.status = "error"
@@ -67,6 +98,21 @@ class BaseAgent(ABC):
                 f"Error in {self.AGENT_ID}: {str(exc)}. Please check logs or provide clarification.",
                 task_id=envelope["payload"].get("task_id"),
             )
+            try:
+                from tools import state_store
+                state_store.log_run_event(self.AGENT_ID, "task_error", payload.get("task_id"), payload.get("content"), {
+                    "error": str(exc),
+                    "duration_sec": round(time.time() - start_ts, 3),
+                })
+                state_store.update_task_state(payload.get("task_id"), {
+                    "agent_id": self.AGENT_ID,
+                    "status": "error",
+                    "ended_at": time.time(),
+                    "duration_sec": round(time.time() - start_ts, 3),
+                    "error": str(exc),
+                })
+            except Exception:
+                pass
         finally:
             if self.status != "error":
                 self.status = "idle"
@@ -92,13 +138,13 @@ class BaseAgent(ABC):
         print(f"[{self.AGENT_ID}] REPORT: {content[:60]}...")
         await broadcast(from_agent=self.AGENT_ID, content=content, task_id=task_id)
 
-    async def _call_llm(self, user_message: str, system_prompt: str = None) -> str:
+    async def _call_llm(self, user_message: str, system_prompt: str = None, model_override: str = None) -> str:
         api_key = (os.getenv("GROQ_API_KEY") or "").strip()
         if not api_key:
             await asyncio.sleep(0.05)
             return f"[LLM unavailable] {self.AGENT_ID}: GROQ_API_KEY missing"
 
-        model = (os.getenv("GROQ_MODEL") or "llama-3.3-70b-versatile").strip()
+        model = (model_override or os.getenv("GROQ_MODEL") or "openai/gpt-oss-120b").strip()
         payload = {
             "model": model,
             "temperature": 0.2,
@@ -110,14 +156,14 @@ class BaseAgent(ABC):
         }
         return await self._call_groq_with_retry(payload, api_key)
 
-    async def _call_llm_with_history(self, history: list[dict]) -> str:
+    async def _call_llm_with_history(self, history: list[dict], model_override: str = None) -> str:
         api_key = (os.getenv("GROQ_API_KEY") or "").strip()
         if not api_key:
             await asyncio.sleep(0.05)
             last_user = next((m["content"] for m in reversed(history) if m["role"] == "user"), "")
             return f"[LLM unavailable] {self.AGENT_ID}: {last_user[:160]}"
 
-        model = (os.getenv("GROQ_MODEL") or "llama-3.3-70b-versatile").strip()
+        model = (model_override or os.getenv("GROQ_MODEL") or "openai/gpt-oss-120b").strip()
         payload = {
             "model": model,
             "temperature": 0.2,
@@ -153,6 +199,88 @@ class BaseAgent(ABC):
             return 1200
 
     @staticmethod
+    def _estimate_tokens_from_payload(payload: dict) -> int:
+        try:
+            messages = payload.get("messages", [])
+            chars = sum(len(m.get("content", "")) for m in messages)
+            in_tokens = max(1, int(chars / 4))
+            out_tokens = int(payload.get("max_tokens") or 0)
+            return max(1, in_tokens + out_tokens)
+        except Exception:
+            return max(1, int(payload.get("max_tokens") or 256))
+
+    @staticmethod
+    def _groq_limits(model: str) -> tuple[int, int, int, int]:
+        # Env overrides. If unset, use model defaults for gpt-oss-120b.
+        def _read(name: str) -> int:
+            raw = (os.getenv(name) or "").strip()
+            if not raw:
+                return 0
+            try:
+                return max(0, int(raw))
+            except Exception:
+                return 0
+
+        rpm = _read("GROQ_RPM")
+        rpd = _read("GROQ_RPD")
+        tpm = _read("GROQ_TPM")
+        tpd = _read("GROQ_TPD")
+
+        if not any((rpm, rpd, tpm, tpd)) and model.strip().lower() == "openai/gpt-oss-120b":
+            rpm = 30
+            rpd = 1000
+            tpm = 8000
+            tpd = 200000
+
+        return rpm, rpd, tpm, tpd
+
+    async def _apply_groq_rate_limit_locked(self, tokens: int, model: str) -> str | None:
+        rpm, rpd, tpm, tpd = self._groq_limits(model)
+        if not any((rpm, rpd, tpm, tpd)):
+            return None
+
+        day = datetime.utcnow().strftime("%Y-%m-%d")
+        if BaseAgent._GROQ_DAY != day:
+            BaseAgent._GROQ_DAY = day
+            BaseAgent._GROQ_DAY_COUNT = 0
+            BaseAgent._GROQ_DAY_TOKENS = 0
+
+        if rpd and BaseAgent._GROQ_DAY_COUNT >= rpd:
+            return f"RPD limit reached ({rpd}/day)"
+        if tpd and (BaseAgent._GROQ_DAY_TOKENS + tokens) > tpd:
+            return f"TPD limit reached ({tpd}/day)"
+
+        def _purge(now: float) -> None:
+            BaseAgent._GROQ_REQ_TIMES[:] = [t for t in BaseAgent._GROQ_REQ_TIMES if now - t < 60]
+            BaseAgent._GROQ_TOKEN_WINDOW[:] = [(t, tok) for (t, tok) in BaseAgent._GROQ_TOKEN_WINDOW if now - t < 60]
+
+        now = time.monotonic()
+        _purge(now)
+
+        if rpm and len(BaseAgent._GROQ_REQ_TIMES) >= rpm:
+            wait = 60 - (now - BaseAgent._GROQ_REQ_TIMES[0])
+            if wait > 0:
+                await asyncio.sleep(wait)
+            now = time.monotonic()
+            _purge(now)
+
+        if tpm:
+            token_sum = sum(tok for _, tok in BaseAgent._GROQ_TOKEN_WINDOW)
+            if token_sum + tokens > tpm and BaseAgent._GROQ_TOKEN_WINDOW:
+                wait = 60 - (now - BaseAgent._GROQ_TOKEN_WINDOW[0][0])
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                now = time.monotonic()
+                _purge(now)
+
+        now2 = time.monotonic()
+        BaseAgent._GROQ_REQ_TIMES.append(now2)
+        BaseAgent._GROQ_TOKEN_WINDOW.append((now2, tokens))
+        BaseAgent._GROQ_DAY_COUNT += 1
+        BaseAgent._GROQ_DAY_TOKENS += tokens
+        return None
+
+    @staticmethod
     def _sync_groq_call(payload: dict, api_key: str) -> str:
         resp = requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
@@ -186,10 +314,18 @@ class BaseAgent(ABC):
         except Exception:
             min_interval = 1.2
 
+        tokens_est = self._estimate_tokens_from_payload(payload)
+        model_name = str(payload.get("model") or "").strip()
         for attempt in range(max_retries + 1):
             try:
                 async with self._llm_semaphore():
                     async with self._llm_lock():
+                        now_cd = time.monotonic()
+                        if BaseAgent._LLM_COOLDOWN_UNTIL > now_cd:
+                            await asyncio.sleep(BaseAgent._LLM_COOLDOWN_UNTIL - now_cd)
+                        rate_err = await self._apply_groq_rate_limit_locked(tokens_est, model_name)
+                        if rate_err:
+                            return f"[LLM error] {rate_err}"
                         now = time.monotonic()
                         wait_s = max(0.0, min_interval - (now - BaseAgent._LLM_LAST_CALL_TS))
                         if wait_s > 0:
@@ -205,7 +341,9 @@ class BaseAgent(ABC):
                         delay = float(retry_after) if retry_after else (2 ** attempt)
                     except Exception:
                         delay = 2 ** attempt
-                    await asyncio.sleep(max(0.5, min(30.0, delay)))
+                    cooldown = max(30.0, min(120.0, delay if delay else 60.0))
+                    BaseAgent._LLM_COOLDOWN_UNTIL = time.monotonic() + cooldown
+                    await asyncio.sleep(cooldown)
                     continue
                 if status == 429:
                     return f"[LLM error] HTTPError 429: rate limit exceeded after retries ({max_retries + 1} attempts)"
@@ -232,6 +370,17 @@ class BaseAgent(ABC):
         candidates = []
         for ext in ("*.csv", "*.xlsx", "*.xls", "*.parquet", "*.json", "*.tsv"):
             candidates.extend(ds_dir.glob(ext))
+        if not candidates:
+            return None
+        return sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True)[0]
+
+    def find_latest_engineered_dataset(self) -> Path | None:
+        if not workspace.is_initialized or not workspace.project_root:
+            return None
+        ds_dir = workspace.project_root / "shared" / "datasets"
+        if not ds_dir.exists():
+            return None
+        candidates = list(ds_dir.glob("*_engineered.csv"))
         if not candidates:
             return None
         return sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True)[0]

@@ -285,6 +285,12 @@ export default function App() {
   const [p2pLog, setP2pLog]             = useState([]);
   const [fileLog, setFileLog]           = useState([]);
   const [uploading, setUploading]       = useState(false);
+  const [datasetReady, setDatasetReady] = useState(false);
+  const [datasetInfo, setDatasetInfo]   = useState(null);
+  const [showProjectInit, setShowProjectInit] = useState(false);
+  const [projectPathInput, setProjectPathInput] = useState("");
+  const [projectNameInput, setProjectNameInput] = useState("");
+  const [projectInitBusy, setProjectInitBusy] = useState(false);
 
   const wsRef         = useRef(null);
   const uploadRef     = useRef(null);
@@ -380,6 +386,20 @@ export default function App() {
     });
   }, []);
 
+  // â”€â”€ File log seeding â€” add only if missing (for snapshot) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  const seedFile = useCallback((agent_id, filename, full_path) => {
+    setFileLog(prev => {
+      const idx = prev.findIndex(f => f.filename === filename && f.agent_id === agent_id);
+      if (idx >= 0) return prev;
+      return [...prev, {
+        id: uid(),
+        agent_id, filename, full_path,
+        timestamp: Date.now(),
+        version: 1,
+      }];
+    });
+  }, []);
+
   // â”€â”€ Handle incoming backend messages â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleWsMessage = useCallback((msg) => {
     const { type, from, to, content, tag, extra, task_id } = msg;
@@ -404,8 +424,18 @@ export default function App() {
     if (type === "project_info") {
       setProjectName(extra?.project_name);
       setProjectRoot(extra?.project_root);
+      setShowProjectInit(false);
+      setProjectInitBusy(false);
+      setDatasetReady(false);
+      setDatasetInfo(null);
       pushMsg("team", "orchestrator",
         `Project: ${extra?.project_name}\nDIR ${extra?.project_root}`, "STATUS");
+      return;
+    }
+
+    if (type === "files_snapshot") {
+      const files = extra?.files || [];
+      files.forEach(f => seedFile(f.agent_id, f.filename, f.full_path));
       return;
     }
 
@@ -452,7 +482,15 @@ export default function App() {
       upsertFile(extra?.agent_id || from, extra?.filename, extra?.full_path);
       return;
     }
-  }, [upsertFile, getOrCreateGroupChat]);
+
+    if (type === "dataset_uploaded") {
+      setDatasetReady(true);
+      setDatasetInfo(extra || null);
+      pushMsg("team", "orchestrator",
+        `Dataset uploaded: ${extra?.filename || "dataset"}\nDIR ${extra?.path || ""}`, "STATUS");
+      return;
+    }
+  }, [upsertFile, seedFile, getOrCreateGroupChat]);
 
   useEffect(() => {
     if (wsRef.current) {
@@ -650,6 +688,8 @@ export default function App() {
     if (!file || !backendLive || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
     if (!/\.csv$/i.test(file.name)) return;
     setUploading(true);
+    setDatasetReady(false);
+    setDatasetInfo(null);
     try {
       const ab = await file.arrayBuffer();
       let binary = "";
@@ -672,6 +712,49 @@ export default function App() {
     }
   }, [backendLive]);
 
+  const handlePhase3Check = useCallback(() => {
+    if (!backendLive || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    setActiveChat("team");
+    addMsg("team", "user", "phase 3 check", null);
+    wsRef.current.send(JSON.stringify({
+      type: "phase3_check",
+      task_id: `phase3_${Date.now()}`,
+    }));
+    setDatasetReady(false);
+  }, [backendLive, addMsg]);
+
+  const handleRunDirect = useCallback(() => {
+    if (!backendLive || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    const taskId = `run_${Date.now()}`;
+    taskRouteRef.current[taskId] = {
+      mode: "team",
+      chatId: "team",
+      members: new Set(),
+      groupChatId: null,
+    };
+    setActiveChat("team");
+    addMsg("team", "user", "analyse data", null);
+    wsRef.current.send(JSON.stringify({
+      type: "user_message",
+      content: "analyse data",
+      to: "team",
+      task_id: taskId,
+    }));
+    setDatasetReady(false);
+  }, [backendLive, addMsg]);
+
+  const handleInitProject = useCallback(() => {
+    if (!backendLive || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    if (!projectPathInput.trim() || !projectNameInput.trim()) return;
+    setProjectInitBusy(true);
+    wsRef.current.send(JSON.stringify({
+      type: "init_project",
+      output_path: projectPathInput.trim(),
+      project_name: projectNameInput.trim(),
+      task_id: `init_${Date.now()}`,
+    }));
+  }, [backendLive, projectPathInput, projectNameInput]);
+
   const currentChat = chatList.find(c => c.id === activeChat);
 
   return (
@@ -686,8 +769,42 @@ export default function App() {
             <div style={{ fontSize: 9, color: "#3a3a3a", letterSpacing: ".1em", textTransform: "uppercase" }}>Multi-Agent Autonomous System | v2.1</div>
           </div>
         </div>
-        <ConnBadge status={connStatus} project={projectName} />
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {backendLive && (
+            <button
+              onClick={() => setShowProjectInit(v => !v)}
+              style={{ fontSize: 10, padding: "6px 10px", borderRadius: 6, background: "#0b0b0b", border: "1px solid #1a1a1a", color: "#9ca3af", cursor: "pointer" }}
+            >
+              {projectRoot ? "New Project" : "Set Project"}
+            </button>
+          )}
+          <ConnBadge status={connStatus} project={projectName} />
+        </div>
       </header>
+
+      {(showProjectInit || !projectRoot) && (
+        <div style={{ padding: "10px 20px", borderBottom: "1px solid #111", background: "#080808", display: "flex", gap: 10, alignItems: "center" }}>
+          <input
+            value={projectPathInput}
+            onChange={e => setProjectPathInput(e.target.value)}
+            placeholder="Output path (e.g. D:\\Downloads)"
+            style={{ flex: 1, background: "#0b0b0b", border: "1px solid #1a1a1a", color: "#cbd5f5", borderRadius: 6, padding: "8px 10px", fontSize: 11 }}
+          />
+          <input
+            value={projectNameInput}
+            onChange={e => setProjectNameInput(e.target.value)}
+            placeholder="Project name"
+            style={{ width: 220, background: "#0b0b0b", border: "1px solid #1a1a1a", color: "#cbd5f5", borderRadius: 6, padding: "8px 10px", fontSize: 11 }}
+          />
+          <button
+            onClick={handleInitProject}
+            disabled={!backendLive || projectInitBusy || !projectPathInput.trim() || !projectNameInput.trim()}
+            style={{ fontSize: 11, padding: "8px 12px", borderRadius: 6, background: "#1f2937", border: "1px solid #374151", color: "#e5e7eb", cursor: "pointer", opacity: (!backendLive || projectInitBusy || !projectPathInput.trim() || !projectNameInput.trim()) ? 0.4 : 1 }}
+          >
+            {projectInitBusy ? "Creating..." : "Create Project"}
+          </button>
+        </div>
+      )}
 
       <div style={S.body}>
         <Sidebar agents={agents} activeChat={activeChat} onSelectChat={setActiveChat} chatList={chatList} />
@@ -751,6 +868,22 @@ export default function App() {
               >
                 {uploading ? "..." : "Upload"}
               </button>
+              {datasetReady && (
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <button
+                    onClick={handlePhase3Check}
+                    style={{ fontSize: 11, padding: "8px 10px", borderRadius: 6, background: "#0a1a12", border: "1px solid #1f3a2a", color: "#6ee7b7", cursor: "pointer" }}
+                  >
+                    Check Agents
+                  </button>
+                  <button
+                    onClick={handleRunDirect}
+                    style={{ fontSize: 11, padding: "8px 10px", borderRadius: 6, background: "#111827", border: "1px solid #374151", color: "#cbd5f5", cursor: "pointer" }}
+                  >
+                    Run Without Check
+                  </button>
+                </div>
+              )}
               <textarea
                 value={inputs[activeChat] || ""}
                 onChange={e => setInputs(prev => ({ ...prev, [activeChat]: e.target.value }))}

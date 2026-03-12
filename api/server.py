@@ -86,6 +86,94 @@ def _run_transparency_for_dataset_sync(dataset_path: Path, output_path: Path) ->
     output_path.write_text(output, encoding="utf-8")
 
 
+def _run_phase3_checks_sync(project_root: Path) -> tuple[int, str]:
+    repo_root = Path(__file__).resolve().parent.parent
+    cmd = [
+        sys.executable,
+        str(repo_root / "tools" / "phase3_checks.py"),
+        "--project-root",
+        str(project_root),
+    ]
+    env = dict(**os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+    proc = subprocess.run(
+        cmd,
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+        timeout=1800,
+        check=False,
+    )
+    output = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
+    return proc.returncode, output
+
+
+async def _phase3_check_background(project_root: Path, task_id: str | None) -> None:
+    await broadcast_to_gui({
+        "type": "team_message",
+        "from": "server",
+        "to": "team",
+        "content": "Phase 3 checks started.",
+        "tag": "STATUS",
+        "task_id": task_id,
+    })
+    try:
+        rc, output = await asyncio.to_thread(_run_phase3_checks_sync, project_root)
+        try:
+            log_path = project_root / "shared" / "phase3_check.log"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_path.write_text(output, encoding="utf-8")
+        except Exception:
+            pass
+
+        await broadcast_to_gui({
+            "type": "team_message",
+            "from": "server",
+            "to": "team",
+            "content": "Phase 3 checks completed." + (f" Return code: {rc}" if rc != 0 else ""),
+            "tag": "DONE" if rc == 0 else "ALERT",
+            "task_id": task_id,
+        })
+
+        if workspace.is_initialized and workspace.project_root:
+            try:
+                files = []
+                for rel in workspace.list_files():
+                    parts = Path(rel).parts
+                    if not parts:
+                        continue
+                    agent_id = parts[0]
+                    filename = "/".join(parts[1:]) if len(parts) > 1 else parts[0]
+                    files.append({
+                        "agent_id": agent_id,
+                        "filename": filename,
+                        "full_path": str(workspace.project_root / rel),
+                    })
+                await broadcast_to_gui({
+                    "type": "files_snapshot",
+                    "from": "server",
+                    "to": "gui",
+                    "content": "files_snapshot",
+                    "tag": None,
+                    "task_id": None,
+                    "extra": {"files": files},
+                })
+            except Exception:
+                pass
+    except Exception:
+        await broadcast_to_gui({
+            "type": "team_message",
+            "from": "server",
+            "to": "team",
+            "content": "Phase 3 checks failed to run.",
+            "tag": "ALERT",
+            "task_id": task_id,
+        })
+
+
 async def _process_dataset_background(dataset_path: Path) -> None:
     if not workspace.is_initialized or not workspace.project_root:
         return
@@ -237,6 +325,35 @@ async def websocket_endpoint(websocket: WebSocket):
                 "project_root": str(workspace.project_root),
             },
         }))
+        # Send a snapshot of existing files so the GUI can populate the Files panel.
+        try:
+            files = []
+            for rel in workspace.list_files():
+                parts = Path(rel).parts
+                if not parts:
+                    continue
+                agent_id = parts[0]
+                filename = "/".join(parts[1:]) if len(parts) > 1 else parts[0]
+                files.append({
+                    "agent_id": agent_id,
+                    "filename": filename,
+                    "full_path": str(workspace.project_root / rel),
+                })
+            if files:
+                await websocket.send_text(json.dumps({
+                    "type":      "files_snapshot",
+                    "from":      "server",
+                    "to":        "gui",
+                    "content":   "files_snapshot",
+                    "tag":       None,
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "task_id":   None,
+                    "extra": {
+                        "files": files,
+                    },
+                }))
+        except Exception:
+            pass
 
     try:
         while True:
@@ -255,6 +372,90 @@ async def websocket_endpoint(websocket: WebSocket):
                     "content": "pong", "tag": None,
                     "timestamp": datetime.utcnow().isoformat(), "task_id": None,
                 }))
+                continue
+
+            # ---- Initialize project from GUI ----
+            if msg_type == "init_project":
+                output_path = (msg.get("output_path") or "").strip()
+                project_name = (msg.get("project_name") or "").strip()
+                if not output_path or not project_name:
+                    await broadcast_to_gui({
+                        "type": "team_message",
+                        "from": "server",
+                        "to": "team",
+                        "content": "Project init failed: output_path and project_name are required.",
+                        "tag": "ALERT",
+                        "task_id": msg.get("task_id"),
+                    })
+                    continue
+                try:
+                    path = Path(output_path)
+                    if not path.exists():
+                        path.mkdir(parents=True, exist_ok=True)
+                    workspace.configure(output_path)
+                    project_root = workspace.new_project(project_name)
+
+                    await broadcast_to_gui({
+                        "type": "project_info",
+                        "from": "server",
+                        "to": "gui",
+                        "content": f"Project: {workspace.project_name}",
+                        "tag": "STATUS",
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "task_id": msg.get("task_id"),
+                        "extra": {
+                            "project_name": workspace.project_name,
+                            "project_root": str(project_root),
+                        },
+                    })
+                    try:
+                        files = []
+                        for rel in workspace.list_files():
+                            parts = Path(rel).parts
+                            if not parts:
+                                continue
+                            agent_id = parts[0]
+                            filename = "/".join(parts[1:]) if len(parts) > 1 else parts[0]
+                            files.append({
+                                "agent_id": agent_id,
+                                "filename": filename,
+                                "full_path": str(workspace.project_root / rel),
+                            })
+                        await broadcast_to_gui({
+                            "type": "files_snapshot",
+                            "from": "server",
+                            "to": "gui",
+                            "content": "files_snapshot",
+                            "tag": None,
+                            "task_id": None,
+                            "extra": {"files": files},
+                        })
+                    except Exception:
+                        pass
+                except Exception as e:
+                    await broadcast_to_gui({
+                        "type": "team_message",
+                        "from": "server",
+                        "to": "team",
+                        "content": f"Project init failed: {e}",
+                        "tag": "ALERT",
+                        "task_id": msg.get("task_id"),
+                    })
+                continue
+
+            # ---- Phase 3 checks ----
+            if msg_type == "phase3_check":
+                if not workspace.is_initialized or not workspace.project_root:
+                    await broadcast_to_gui({
+                        "type": "team_message",
+                        "from": "server",
+                        "to": "team",
+                        "content": "Phase 3 check failed: project not initialized.",
+                        "tag": "ALERT",
+                        "task_id": msg.get("task_id"),
+                    })
+                    continue
+                asyncio.create_task(_phase3_check_background(workspace.project_root, msg.get("task_id")))
                 continue
 
             # ── File write from frontend ───────────────────────────────────
@@ -299,6 +500,18 @@ async def websocket_endpoint(websocket: WebSocket):
                     dataset_path = datasets_dir / filename
                     dataset_path.write_bytes(blob)
                     asyncio.create_task(_process_dataset_background(dataset_path))
+                    await broadcast_to_gui({
+                        "type": "dataset_uploaded",
+                        "from": "server",
+                        "to": "gui",
+                        "content": "dataset_uploaded",
+                        "tag": "STATUS",
+                        "task_id": task_id,
+                        "extra": {
+                            "filename": filename,
+                            "path": str(dataset_path),
+                        },
+                    })
                 except Exception:
                     pass
                 continue

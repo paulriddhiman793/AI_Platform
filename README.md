@@ -6,7 +6,7 @@ A multi-agent AI engineering workspace where specialized agents collaborate to b
 
 This platform simulates and coordinates a real software/ML team:
 
-- Orchestrates multiple agents for ML, data, frontend, security, runtime validation, and GitHub automation.
+- Orchestrates multiple agents for ML, data, and GitHub automation.
 - Writes all generated artifacts to a structured workspace on disk.
 - Streams agent messages, p2p interactions, and file writes to a live React GUI over WebSocket.
 - Supports both team-level task routing and direct/private agent instructions.
@@ -26,10 +26,8 @@ This platform simulates and coordinates a real software/ML team:
   - Lexical retrieval via TF-IDF
   - Hybrid scoring for better recall/precision
 - Data Scientist/Data Analyst report generation now uses hybrid-RAG context from full transparency output
-- Security pipeline:
-  - SAST static scans
-  - Runtime security dynamic checks
-- Frontend generation and local dev server automation
+- Security pipeline removed
+- Frontend generation: disabled
 - GitHub automation agent:
   - Push full repo to `main`
   - Push each agent folder to `agent/<name>` branch
@@ -41,9 +39,6 @@ This platform simulates and coordinates a real software/ML team:
 - `ml_engineer`: Builds pipeline/API/deployment assets
 - `data_scientist`: EDA and feature recommendations
 - `data_analyst`: Metrics, monitoring, incident/reporting
-- `frontend`: Builds dashboard and frontend files
-- `sast`: Static security scanning and remediation loop
-- `runtime_security`: Runtime exploitability checks
 - `github`: Repository sync, branch push, merge workflow
 
 ## Repository Structure
@@ -125,8 +120,6 @@ Open:
 
 Use Team chat for broad instructions like:
 - "build a churn model and deploy it"
-- "run security audit"
-- "build frontend dashboard"
 - "analyse data" (after uploading dataset)
 
 Orchestrator assigns agents and summarizes outcomes.
@@ -163,9 +156,6 @@ After assigned agents finish, orchestrator triggers `github` agent to:
    - `agent/ml_engineer`
    - `agent/data_scientist`
    - `agent/data_analyst`
-   - `agent/frontend`
-   - `agent/sast`
-   - `agent/runtime_security`
    - `agent/shared`
 4. Merge these branches into `main`.
 5. Push merged `main`.

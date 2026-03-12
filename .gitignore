@@ -105,3 +105,22 @@ coverage.xml
 
 catboost_info
 run_demo.py
+.agent_tmp
+
+# AI Platform runtime outputs
+da_pipeline.log
+da_report.txt
+da_results.json
+ml_pipeline.log
+ml_results.json
+ml_brain_output/
+
+# Workspace artifacts (local runs)
+shared/output.txt
+shared/phase3_check.log
+shared/phase3_check_report.*
+shared/phase4_state_report.txt
+shared/datasets/
+shared/rag/
+shared/state/
+shared/graphs/

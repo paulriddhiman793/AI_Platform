@@ -2355,6 +2355,8 @@ def validate_model(model, X, y, X_train, y_train, X_test, y_test,
                 base_params = dict(model.get_params())
                 # Avoid duplicate kwargs when rebuilding CatBoost models per fold.
                 base_params.pop("verbose", None)
+                base_params.pop("allow_writing_files", None)
+                base_params.pop("train_dir", None)
                 if cat_idx:
                     train_pool = Pool(X_tr, label=y_tr, cat_features=cat_idx)
                     val_pool   = Pool(X_val, label=y_val, cat_features=cat_idx)

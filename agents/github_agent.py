@@ -24,9 +24,6 @@ AGENT_FOLDERS = [
     "ml_engineer",
     "data_scientist",
     "data_analyst",
-    "frontend",
-    "sast",
-    "runtime_security",
     "shared",
 ]
 

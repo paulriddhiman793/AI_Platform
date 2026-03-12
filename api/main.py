@@ -20,9 +20,6 @@ from agents.orchestrator import OrchestratorAgent
 from agents.ml_engineer import MLEngineerAgent
 from agents.data_scientist import DataScientistAgent
 from agents.data_analyst import DataAnalystAgent
-from agents.frontend_fullstack import FrontendAgent
-from agents.sast import SASTAgent
-from agents.runtime_security import RuntimeSecurityAgent
 from agents.github_agent import GitHubAgent
 
 
@@ -150,13 +147,15 @@ def get_startup_config() -> tuple[str, str]:
 
 
 async def main() -> None:
-    # 1. Config
-    output_path, project_name = get_startup_config()
-
-    # 2. Workspace
-    workspace.configure(output_path)
-    project_root = workspace.new_project(project_name)
-    print(f"\nProject: {project_root}")
+    # 1. Config (CLI init is optional; GUI can initialize the project)
+    cli_init = (os.getenv("AI_PLATFORM_CLI_INIT") or "").strip().lower() in ("1", "true", "yes")
+    if cli_init:
+        output_path, project_name = get_startup_config()
+        workspace.configure(output_path)
+        project_root = workspace.new_project(project_name)
+        print(f"\nProject: {project_root}")
+    else:
+        print("\n[INIT] CLI init disabled. Waiting for GUI to initialize project.")
 
     # 3. Instantiate agents ONCE
     agents = [
@@ -164,9 +163,6 @@ async def main() -> None:
         MLEngineerAgent(),
         DataScientistAgent(),
         DataAnalystAgent(),
-        FrontendAgent(),
-        SASTAgent(),
-        RuntimeSecurityAgent(),
         GitHubAgent(),
     ]
 

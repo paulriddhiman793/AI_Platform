@@ -41,7 +41,7 @@ class WorkspaceManager:
         self._project_root = self._output_path / f"{safe_name}_{timestamp}"
 
         for subdir in ["ml_engineer", "data_scientist", "data_analyst",
-                       "frontend", "sast", "runtime_security", "github", "shared"]:
+                       "github", "shared"]:
             (self._project_root / subdir).mkdir(parents=True, exist_ok=True)
 
         # Write project info file
@@ -68,6 +68,11 @@ class WorkspaceManager:
 
         # Fire event to GUI (non-blocking)
         self._fire_file_event(agent_id, filename, str(file_path), task_id)
+        try:
+            from tools import state_store
+            state_store.log_artifact(agent_id, filename, str(file_path), task_id, size_bytes=len(content.encode("utf-8")))
+        except Exception:
+            pass
 
         return file_path
 
@@ -79,6 +84,11 @@ class WorkspaceManager:
         file_path.write_bytes(data)
         print(f"[WORKSPACE] binary write {agent_id}/{filename} ({len(data)} bytes)")
         self._fire_file_event(agent_id, filename, str(file_path), task_id)
+        try:
+            from tools import state_store
+            state_store.log_artifact(agent_id, filename, str(file_path), task_id, size_bytes=len(data))
+        except Exception:
+            pass
         return file_path
 
     def read(self, agent_id: str, filename: str) -> str:
@@ -158,6 +168,10 @@ class WorkspaceManager:
     @property
     def project_root(self) -> Optional[Path]:
         return self._project_root
+
+    @property
+    def output_path(self) -> Optional[Path]:
+        return self._output_path
 
     @property
     def project_name(self) -> Optional[str]:

@@ -1,5 +1,7 @@
 from datetime import datetime
 from pathlib import Path
+import os
+import hashlib
 import re
 
 import pandas as pd
@@ -38,52 +40,40 @@ class DataScientistAgent(BaseAgent):
         block = "\n".join(lines[start:end]).strip()
         return block or "[Class Imbalance section not found in output]"
 
-    def _build_ds_code(self, dataset_path: Path) -> str:
+    def _build_fe_runner_code(self, dataset_path: Path) -> str:
         ds = str(dataset_path).replace("\\", "\\\\")
-        return f'''import numpy as np
+        return f'''import os
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-from model_transparency import run_pipeline
-from model_transparency import run_pipeline_from_df, infer_target_column
-
-# Required by workflow:
-from model_transparency import run_pipeline
+from fe_1 import run, identify_target_column
 
 df = pd.read_csv(r"{ds}")
-print("DATASET_PATH:", r"{ds}")
-print("DATASET_SHAPE:", df.shape)
-print("COLUMNS:", list(df.columns))
-
-target_col, confidence, reason, _ = infer_target_column(df, verbose=False)
-print("INFERRED_TARGET_COL:", target_col)
-print("TARGET_CONFIDENCE:", confidence)
-print("TARGET_REASON:", reason)
-y_raw = df[target_col]
-if y_raw.nunique(dropna=True) <= 20:
-    task_type = "classification"
-    model = RandomForestClassifier(n_estimators=100, random_state=42)
-else:
-    task_type = "regression"
-    model = RandomForestRegressor(n_estimators=120, random_state=42)
-
-print("TARGET_COL:", target_col)
-print("TASK_TYPE:", task_type)
-run_pipeline_from_df(
-    model=model,
-    df=df,
-    target_col=target_col,
-    task_type=task_type,
-    test_size=0.2,
-    scale=(task_type == "regression"),
-    cv=3,
-    n_walkthrough=2
-)
-
-print("NULL_RATE_TOP5:")
-null_rate = (df.isna().mean().sort_values(ascending=False).head(5) * 100).round(2)
-for k, v in null_rate.items():
-    print(f"  {{k}}: {{v}}%")
+target_col = identify_target_column(df, r"{ds}")
+run(csv_path=r"{ds}", target_col=target_col)
+print("ENGINEERED_BASE:", os.path.splitext(os.path.basename(r"{ds}"))[0])
 '''
+
+    def _fe_output_paths(self, dataset_path: Path) -> dict:
+        base = dataset_path.stem
+        root = dataset_path.parent
+        return {
+            "engineered_csv": root / f"{base}_engineered.csv",
+            "suggestions_md": root / f"{base}_feature_suggestions.md",
+            "feature_py": root / f"{base}_feature_engineering.py",
+            "base": base,
+        }
+
+    def _cache_root(self) -> Path:
+        if workspace.output_path:
+            return workspace.output_path / ".cache" / "engineered"
+        return self._repo_root() / ".cache" / "engineered"
+
+    def _hash_file(self, path: Path) -> str:
+        h = hashlib.sha256()
+        with path.open("rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
 
     async def _build_detailed_report_from_output(self, dataset_path: Path, shape: tuple, null_top: dict, output: str) -> tuple[str, str]:
         rag_queries = [
@@ -175,53 +165,104 @@ for k, v in null_rate.items():
                 )
                 return None
 
-            code = self._build_ds_code(ds_path)
-            if workspace.is_initialized:
-                workspace.write("data_scientist", "analysis_ds.py", code, task_id)
+            # Reuse cached engineered CSV if this dataset was already processed.
+            cache_root = self._cache_root()
+            cache_root.mkdir(parents=True, exist_ok=True)
+            ds_hash = self._hash_file(ds_path)
+            cache_dir = cache_root / ds_hash
+            cached_csv = cache_dir / "engineered.csv"
+            cached_py = cache_dir / "feature_engineering.py"
+            cached_md = cache_dir / "feature_suggestions.md"
+            if cached_csv.exists() and workspace.is_initialized:
+                engineered_dst = workspace.write_bytes(
+                    "shared",
+                    f"datasets/{ds_path.stem}_engineered.csv",
+                    cached_csv.read_bytes(),
+                    task_id,
+                )
+                if cached_md.exists():
+                    workspace.write(
+                        "data_scientist",
+                        f"{ds_path.stem}_feature_suggestions.md",
+                        cached_md.read_text(encoding="utf-8", errors="replace"),
+                        task_id,
+                    )
+                await self.report(
+                    "Data Scientist reused cached engineered dataset.\n"
+                    f"Saved: shared/datasets/{ds_path.stem}_engineered.csv",
+                    task_id,
+                )
+                await self.message(
+                    "orchestrator",
+                    "Data Scientist reused cached engineered dataset.",
+                    task_id,
+                )
+                return None
+
+            # Step 1: Run feature engineering pipeline (fe_1.py)
+            fe_code = self._build_fe_runner_code(ds_path)
 
             await self.report(
-                "Data Scientist analysis started in Jupyter kernel.\n"
-                "Code saved: data_scientist/analysis_ds.py\n"
-                "Requirement enforced: `from model_transparency import run_pipeline` and `run_pipeline(...)`.",
+                "Data Scientist feature engineering started in Jupyter kernel.\n",
                 task_id,
             )
 
-            exec_result = await self.run_code_in_jupyter_kernel(code, timeout_s=300)
-            output = exec_result.get("output", "") or "[no output]"
+            fe_exec = await self.run_code_in_jupyter_kernel(fe_code, timeout_s=900)
+            fe_output = fe_exec.get("output", "") or "[no output]"
             if workspace.is_initialized:
-                workspace.write("data_scientist", "jupyter_output.txt", output, task_id)
+                workspace.write("data_scientist", "fe_jupyter_output.txt", fe_output, task_id)
 
-            df = pd.read_csv(ds_path)
-            null_top = (df.isna().mean().sort_values(ascending=False).head(5) * 100).round(2)
-            llm_report, llm_status = await self._build_detailed_report_from_output(
-                dataset_path=ds_path,
-                shape=df.shape,
-                null_top=dict(null_top),
-                output=output,
-            )
-            report = (
-                f"# Data Scientist Report\n\n"
-                f"Dataset: `{ds_path}`\n"
-                f"Shape: {df.shape}\n"
-                f"Runner: {exec_result.get('runner')}\n"
-                f"Used required import: `from model_transparency import run_pipeline`\n\n"
-                f"{llm_status}\n\n"
-                f"{llm_report}\n\n"
-                f"## Raw Execution Output (Full)\n```\n{output}\n```\n"
-            )
-            if workspace.is_initialized:
-                workspace.write("data_scientist", "report.md", report, task_id)
-                self.build_reports_rag_index()
+            paths = self._fe_output_paths(ds_path)
+            engineered_src = paths["engineered_csv"]
+            suggestions_src = paths["suggestions_md"]
+            feature_py_src = paths["feature_py"]
+            base = paths["base"]
+
+            engineered_dst = None
+            if workspace.is_initialized and engineered_src.exists():
+                engineered_bytes = engineered_src.read_bytes()
+                engineered_dst = workspace.write_bytes(
+                    "shared",
+                    f"datasets/{base}_engineered.csv",
+                    engineered_bytes,
+                    task_id,
+                )
+            if workspace.is_initialized and suggestions_src.exists():
+                workspace.write(
+                    "data_scientist",
+                    f"{base}_feature_suggestions.md",
+                    suggestions_src.read_text(encoding="utf-8", errors="replace"),
+                    task_id,
+                )
+            if workspace.is_initialized and feature_py_src.exists():
+                pass
+
+            # Cache outputs for reuse across projects
+            try:
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                if engineered_src.exists():
+                    (cache_dir / "engineered.csv").write_bytes(engineered_src.read_bytes())
+                if feature_py_src.exists():
+                    (cache_dir / "feature_engineering.py").write_text(
+                        feature_py_src.read_text(encoding="utf-8", errors="replace"),
+                        encoding="utf-8",
+                    )
+                if suggestions_src.exists():
+                    (cache_dir / "feature_suggestions.md").write_text(
+                        suggestions_src.read_text(encoding="utf-8", errors="replace"),
+                        encoding="utf-8",
+                    )
+            except Exception:
+                pass
 
             await self.report(
-                "Data Scientist completed analysis.\n"
-                "Saved: data_scientist/jupyter_output.txt, data_scientist/report.md\n"
-                f"Execution runner: {exec_result.get('runner')} | success={exec_result.get('success')}",
+                "Data Scientist completed feature engineering.\n"
+                "Saved: data_scientist/*_feature_suggestions.md, shared/datasets/*_engineered.csv",
                 task_id,
             )
             await self.message(
                 "orchestrator",
-                "Data Scientist completed analysis and report.md is ready.",
+                "Data Scientist completed feature engineering. Engineered CSV is ready.",
                 task_id,
             )
             return None
