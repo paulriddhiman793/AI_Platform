@@ -38,6 +38,20 @@ app.add_middleware(
 
 connected_clients: Set[WebSocket] = set()
 _recent_user_messages: dict[tuple[str, str], float] = {}
+_recent_bus_messages: dict[tuple, float] = {}
+
+
+def _dedup_bus_message(key: tuple, window_s: float = 1.5) -> bool:
+    """Return True if duplicate within window; otherwise record and return False."""
+    now_ts = time.time()
+    last_ts = _recent_bus_messages.get(key, 0.0)
+    if now_ts - last_ts < window_s:
+        return True
+    _recent_bus_messages[key] = now_ts
+    if len(_recent_bus_messages) > 500:
+        # Drop an arbitrary old key to keep map small
+        _recent_bus_messages.pop(next(iter(_recent_bus_messages)))
+    return False
 
 # ── Guard: listeners only ever start once ─────────────────────────────────────
 _listeners_started = False
@@ -212,6 +226,8 @@ async def _listen_orchestrator_inbox() -> None:
     while True:
         envelope = await q.get()
         p = envelope["payload"]
+        if _dedup_bus_message(("team", p.get("from"), p.get("content"), p.get("task_id"))):
+            continue
         await broadcast_to_gui({
             "type":    "team_message",
             "from":    p.get("from", "unknown"),
@@ -227,6 +243,8 @@ async def _listen_p2p() -> None:
     while True:
         envelope = await q.get()
         p = envelope["payload"]
+        if _dedup_bus_message(("p2p", p.get("from"), p.get("to"), p.get("content"), p.get("task_id"))):
+            continue
         await broadcast_to_gui({
             "type":    "p2p_message",
             "from":    p.get("from"),

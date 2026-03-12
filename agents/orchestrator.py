@@ -90,20 +90,26 @@ class OrchestratorAgent(BaseAgent):
         da_findings = root / "data_analyst" / "findings.txt"
         ds_dir = root / "data_scientist"
         ds_suggestions = list(ds_dir.glob("*_feature_suggestions.md")) if ds_dir.exists() else []
+        data_dir = root / "shared" / "datasets"
+        engineered_csvs = (
+            list(data_dir.glob("*_engineered.csv")) if data_dir.exists() else []
+        )
 
-        if not da_findings.exists() or not ds_suggestions:
+        if not da_findings.exists():
             return False
 
-        data_dir = root / "shared" / "datasets"
+        if not ds_suggestions and not engineered_csvs:
+            return False
+
         if data_dir.exists():
-            latest_data_mtime = max(
-                (p.stat().st_mtime for p in data_dir.glob("*.csv")),
-                default=None,
-            )
-            if latest_data_mtime:
-                if da_findings.stat().st_mtime < latest_data_mtime:
+            raw_csvs = [p for p in data_dir.glob("*.csv") if not p.name.endswith("_engineered.csv")]
+            latest_raw_mtime = max((p.stat().st_mtime for p in raw_csvs), default=None)
+            if latest_raw_mtime:
+                if da_findings.stat().st_mtime < latest_raw_mtime:
                     return False
-                if max(p.stat().st_mtime for p in ds_suggestions) < latest_data_mtime:
+                if ds_suggestions and max(p.stat().st_mtime for p in ds_suggestions) < latest_raw_mtime:
+                    return False
+                if engineered_csvs and max(p.stat().st_mtime for p in engineered_csvs) < latest_raw_mtime:
                     return False
 
         return True

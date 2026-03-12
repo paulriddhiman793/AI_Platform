@@ -48,6 +48,20 @@ class MockMessageBus:
 
 
 bus = MockMessageBus()
+_recent_p2p: dict[tuple[str, str, str], float] = {}
+
+
+def _dedup_p2p(from_agent: str, to_agent: str, content: str, window_s: float = 1.5) -> bool:
+    """Return True if duplicate within window; otherwise record and return False."""
+    key = (from_agent, to_agent, content)
+    now_ts = datetime.utcnow().timestamp()
+    last_ts = _recent_p2p.get(key, 0.0)
+    if now_ts - last_ts < window_s:
+        return True
+    _recent_p2p[key] = now_ts
+    if len(_recent_p2p) > 500:
+        _recent_p2p.pop(next(iter(_recent_p2p)))
+    return False
 
 
 async def send_to_agent(
@@ -59,6 +73,8 @@ async def send_to_agent(
     """
     Send a p2p message to an agent inbox and copy it to p2p.monitor for GUI activity feed.
     """
+    if _dedup_p2p(from_agent, to_agent, content):
+        return
     msg = {
         "from": from_agent,
         "to": to_agent,

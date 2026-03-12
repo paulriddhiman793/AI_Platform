@@ -1,6 +1,6 @@
 # AI Engineering Platform
 
-A multi-agent AI engineering workspace where specialized agents collaborate to build, secure, deploy, and monitor ML-driven projects through a shared workspace and real-time GUI.
+A multi-agent AI engineering workspace where specialized agents collaborate to build, deploy, and monitor ML-driven projects through a shared workspace and real-time GUI.
 
 ## What This Project Does
 
@@ -26,7 +26,7 @@ This platform simulates and coordinates a real software/ML team:
   - Lexical retrieval via TF-IDF
   - Hybrid scoring for better recall/precision
 - Data Scientist/Data Analyst report generation now uses hybrid-RAG context from full transparency output
-- Security pipeline removed
+- Security pipeline: removed
 - Frontend generation: disabled
 - GitHub automation agent:
   - Push full repo to `main`
@@ -177,41 +177,45 @@ This project is structured as a progressive platform with both real execution pa
 
 ## Development Phases
 
-The platform is intentionally being built in phases.
+The platform is intentionally being built in phases. Each phase describes what is **implemented**, what is **optional**, and how it behaves at runtime.
 
-### Phase 1 (Current)
+### Phase 1 — Core Orchestration (Current)
 
-- Core multi-agent architecture is implemented.
-- Orchestrator routing is primarily rule/keyword-driven.
-- Agents can coordinate, send p2p messages, and write structured workspace files.
-- GUI + backend realtime loop is active.
-- GitHub automation flow is integrated.
-- Some behaviors are still deterministic/mock-style to stabilize orchestration first.
+Purpose: establish reliable multi-agent routing and file outputs.
 
-### Phase 2 (Next)
+- Orchestrator routes tasks via keyword-based intent detection.
+- Agents coordinate and write artifacts into the workspace.
+- GUI receives real-time messages and file events over WebSocket.
+- GitHub automation can push and branch agent outputs.
 
-- LLMs become the primary reasoning "brains" for agents.
-- Agent decisions, decomposition, and responses become model-driven.
-- Tool-use patterns are expanded per agent role.
-- More natural multi-step planning and contextual reasoning is introduced.
+### Phase 2 — LLM-Driven Reasoning (Optional / Deferred)
 
-### Phase 3
+Purpose: enable model-driven decision making inside agents.
 
-- Real code generation, execution, and validation loops are expanded.
-- Sandbox/tool integrations are hardened for actual build-test-fix cycles.
-- Security review and remediation become deeper and less template-driven.
+- Agents can use LLMs for richer planning and reporting.
+- Tool-use patterns expand per agent role.
+- This phase is optional and can be disabled entirely.
 
-### Phase 4
+### Phase 3 — Execution Hardening (Implemented as "Check Agents")
 
-- Memory/state layers are improved (persistent context beyond single run).
-- Better long-horizon task tracking and cross-agent knowledge reuse.
-- Improved reliability, retries, and failure recovery.
+Purpose: validate environment and workflows before running expensive tasks.
 
-### Phase 5+
+- A GUI "Check Agents" button runs Phase 3 checks in the project folder.
+- Writes Phase 3 reports to the project workspace.
+- Focuses on readiness and consistency rather than LLM intelligence.
 
-- Production hardening:
-  - stronger observability
-  - robust CI/CD integration
-  - policy/permissions controls
-  - scale/performance tuning
-- Move from prototype-oriented behavior to deployment-grade reliability.
+### Phase 4 — State & Reliability (Active)
+
+Purpose: track tasks, status, and durability across runs.
+
+- Every agent logs task start/complete/error to shared state.
+- State is persisted to `shared/state/` for inspection and reporting.
+- A Phase 4 report can be generated from state logs.
+
+### Phase 5 — Production Hardening (Planned)
+
+Purpose: move from prototype workflow to production-grade reliability.
+
+- Stronger observability and structured logging.
+- Robust CI/CD integration and deployment checks.
+- Policy/permission controls and scalability tuning.

@@ -225,7 +225,7 @@ class MLEngineerAgent(BaseAgent):
         return "\n".join(lines)
 
     async def _run_training_for_dataset(self, ds_path: Path, label: str, task_id: str | None) -> dict | None:
-        code = self._build_ml_optuna_code(Path(ds_path))
+        code = self._build_ml_optuna_code(Path(ds_path), label)
         exec_result = await self.run_code_in_jupyter_kernel(code, timeout_s=1200)
         output = exec_result.get("output", "") or "[no output]"
         if workspace.is_initialized:
@@ -506,7 +506,7 @@ class MLEngineerAgent(BaseAgent):
         return report, final_report
 
     # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    def _build_ml_optuna_code(self, dataset_path: "Path") -> str:
+    def _build_ml_optuna_code(self, dataset_path: "Path", label: str) -> str:
         """
         Generate the full v2 ML pipeline script as a string, with the dataset
         path injected.  The generated script includes:
@@ -542,6 +542,8 @@ import logging
 import warnings
 import numpy as np
 import pandas as pd
+import re
+import joblib
 
 from pathlib import Path
 from datetime import datetime
@@ -622,6 +624,7 @@ def _infer_target(df):
 
 # â”€â”€ Data loading â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 DATA_PATH = r"{ds}"
+MODEL_TAG = "{label}"
 log.info(f"Loading dataset: {{DATA_PATH}}")
 df = pd.read_csv(DATA_PATH)
 log.info(f"Shape: {{df.shape}}  |  Columns: {{list(df.columns)}}")
@@ -1136,6 +1139,40 @@ if best:
     log.info(f"BEST: {{best['model']}} [{{best.get('family','')}}]  "
              f"score={{best['score']:.4f}}  cv={{best.get('cv_test_mean','?'):.4f}}")
 
+# â”€â”€ Save trained models â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+def _infer_project_root(path_str: str) -> Path:
+    p = Path(path_str).resolve()
+    for parent in p.parents:
+        if parent.name == "shared":
+            return parent.parent
+    return Path.cwd()
+
+project_root = _infer_project_root(DATA_PATH)
+models_dir = project_root / "ml_engineer" / f"models_{{MODEL_TAG}}"
+models_dir.mkdir(parents=True, exist_ok=True)
+
+def _safe_name(name: str) -> str:
+    if not name:
+        return "model"
+    return re.sub(r"[^a-zA-Z0-9_.-]+", "_", name).strip("_")
+
+saved_models = []
+for r in ok_results:
+    if r.get("status") != "ok":
+        continue
+    pipe = r.get("_pipe")
+    if pipe is None:
+        continue
+    name = _safe_name(r.get("model", "model"))
+    out_path = models_dir / f"{{name}}.joblib"
+    try:
+        joblib.dump(pipe, out_path)
+        saved_models.append(out_path.name)
+    except Exception as e:
+        log.warning(f"Model save failed for {{name}}: {{e}}")
+
+log.info(f"Saved {{len(saved_models)}} model(s) to {{models_dir}}")
+
 # â”€â”€ SHAP â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 feature_importances = {{}}
 if ENABLE_SHAP and best and "_pipe" in best:
@@ -1607,7 +1644,8 @@ for k, v in null_rate.items():
                 "Saved: ml_engineer/jupyter_output_raw.txt, ml_engineer/jupyter_output_engineered.txt, "
                 "ml_engineer/report_raw.txt, ml_engineer/final_report_raw.txt, "
                 "ml_engineer/report_engineered.txt, ml_engineer/final_report_engineered.txt, "
-                "ml_engineer/comparison.txt",
+                "ml_engineer/comparison.txt, "
+                "ml_engineer/models_raw/*.joblib, ml_engineer/models_engineered/*.joblib",
                 task_id,
             )
             await self.message(

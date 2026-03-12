@@ -8,6 +8,8 @@ fire multiple times in reload-style configurations.
 import asyncio
 import os
 import re
+import atexit
+from datetime import datetime
 from pathlib import Path
 
 import uvicorn
@@ -147,6 +149,33 @@ def get_startup_config() -> tuple[str, str]:
 
 
 async def main() -> None:
+    lock_path = Path(".agent_tmp") / "server.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    force_start = (os.getenv("AI_PLATFORM_FORCE_START") or "").strip().lower() in ("1", "true", "yes")
+    if lock_path.exists() and not force_start:
+        print(f"[INIT] Server lock found at {lock_path}. Another instance may be running. Set AI_PLATFORM_FORCE_START=1 to override.")
+        return
+
+    try:
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(f"pid={os.getpid()}\n")
+            fh.write(f"started={datetime.utcnow().isoformat()}Z\n")
+    except FileExistsError:
+        if not force_start:
+            print(f"[INIT] Server lock exists at {lock_path}. Aborting start.")
+            return
+        lock_path.write_text(f"pid={os.getpid()}\nstarted={datetime.utcnow().isoformat()}Z\n", encoding="utf-8")
+
+    def _cleanup_lock() -> None:
+        try:
+            if lock_path.exists():
+                lock_path.unlink()
+        except Exception:
+            pass
+
+    atexit.register(_cleanup_lock)
+
     # 1. Config (CLI init is optional; GUI can initialize the project)
     cli_init = (os.getenv("AI_PLATFORM_CLI_INIT") or "").strip().lower() in ("1", "true", "yes")
     if cli_init:
@@ -199,7 +228,10 @@ async def main() -> None:
             server.serve(),
         )
 
-    await run_all()
+    try:
+        await run_all()
+    finally:
+        _cleanup_lock()
 
 
 if __name__ == "__main__":

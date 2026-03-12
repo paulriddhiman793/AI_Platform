@@ -297,6 +297,7 @@ export default function App() {
   const timers        = useRef([]);
   const msgsEndRef    = useRef({});
   const reconnTimer   = useRef(null);
+  const shouldReconnectRef = useRef(true);
   const activeChatRef = useRef(activeChat);
   const taskRouteRef  = useRef({});
   const groupMapRef   = useRef({});
@@ -350,25 +351,41 @@ export default function App() {
 
   // â”€â”€ WebSocket â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const connectWS = useCallback(() => {
+    if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
     setConnStatus("connecting");
     try {
       const ws = new WebSocket(WS_URL);
       wsRef.current = ws;
       ws.onopen    = () => { setConnStatus("connected"); };
-      ws.onclose   = () => { setConnStatus("disconnected"); reconnTimer.current = setTimeout(connectWS, 3000); };
+      ws.onclose   = () => {
+        setConnStatus("disconnected");
+        wsRef.current = null;
+        if (!shouldReconnectRef.current) return;
+        if (reconnTimer.current) clearTimeout(reconnTimer.current);
+        reconnTimer.current = setTimeout(connectWS, 3000);
+      };
       ws.onerror   = () => { setConnStatus("disconnected"); };
       ws.onmessage = (evt) => {
         try { handleWsMessage(JSON.parse(evt.data)); } catch(e) {}
       };
     } catch {
       setConnStatus("disconnected");
+      if (reconnTimer.current) clearTimeout(reconnTimer.current);
       reconnTimer.current = setTimeout(connectWS, 3000);
     }
   }, []);
 
   useEffect(() => {
+    shouldReconnectRef.current = true;
     connectWS();
-    return () => { clearTimeout(reconnTimer.current); wsRef.current?.close(); };
+    return () => {
+      shouldReconnectRef.current = false;
+      clearTimeout(reconnTimer.current);
+      wsRef.current?.close();
+      wsRef.current = null;
+    };
   }, [connectWS]);
 
   // â”€â”€ File log helper â€” updates existing entry or adds new â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
