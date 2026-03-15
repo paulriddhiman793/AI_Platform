@@ -30,6 +30,25 @@ from tools.rag_store import build_hybrid_index_from_text
 from tools.workspace import workspace
 
 
+def _load_env_file(env_path: Path) -> None:
+    if not env_path.exists():
+        return
+    try:
+        for raw in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip("'").strip('"')
+            if key and key not in os.environ:
+                os.environ[key] = value
+    except Exception:
+        pass
+
+
+_load_env_file(Path(__file__).resolve().parent.parent / ".env")
+
 app = FastAPI(title="AI Engineering Platform")
 
 origins_env = (os.getenv("FRONTEND_ORIGINS") or "").strip()
