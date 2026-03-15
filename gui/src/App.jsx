@@ -291,6 +291,11 @@ export default function App() {
   const [projectPathInput, setProjectPathInput] = useState("");
   const [projectNameInput, setProjectNameInput] = useState("");
   const [projectInitBusy, setProjectInitBusy] = useState(false);
+  const [showGithubConnect, setShowGithubConnect] = useState(false);
+  const [githubToken, setGithubToken] = useState("");
+  const [githubRepo, setGithubRepo] = useState("");
+  const [githubOwner, setGithubOwner] = useState("");
+  const [githubVisibility, setGithubVisibility] = useState("private");
 
   const wsRef         = useRef(null);
   const uploadRef     = useRef(null);
@@ -760,6 +765,23 @@ export default function App() {
     setDatasetReady(false);
   }, [backendLive, addMsg]);
 
+  const handleGithubConnect = useCallback(() => {
+    if (!backendLive || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    if (!githubToken.trim() || !githubRepo.trim()) return;
+    const taskId = `gh_${Date.now()}`;
+    setActiveChat("team");
+    addMsg("team", "user", "connect github", null);
+    wsRef.current.send(JSON.stringify({
+      type: "github_connect",
+      token: githubToken.trim(),
+      owner: githubOwner.trim(),
+      repo: githubRepo.trim(),
+      visibility: githubVisibility,
+      task_id: taskId,
+    }));
+    setShowGithubConnect(false);
+  }, [backendLive, addMsg, githubToken, githubRepo, githubOwner, githubVisibility]);
+
   const handleInitProject = useCallback(() => {
     if (!backendLive || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
     if (!projectPathInput.trim() || !projectNameInput.trim()) return;
@@ -795,6 +817,14 @@ export default function App() {
               {projectRoot ? "New Project" : "Set Project"}
             </button>
           )}
+          {backendLive && (
+            <button
+              onClick={() => setShowGithubConnect(v => !v)}
+              style={{ fontSize: 10, padding: "6px 10px", borderRadius: 6, background: "#0b0b0b", border: "1px solid #1a1a1a", color: "#9ca3af", cursor: "pointer" }}
+            >
+              Connect GitHub
+            </button>
+          )}
           <ConnBadge status={connStatus} project={projectName} />
         </div>
       </header>
@@ -819,6 +849,63 @@ export default function App() {
             style={{ fontSize: 11, padding: "8px 12px", borderRadius: 6, background: "#1f2937", border: "1px solid #374151", color: "#e5e7eb", cursor: "pointer", opacity: (!backendLive || projectInitBusy || !projectPathInput.trim() || !projectNameInput.trim()) ? 0.4 : 1 }}
           >
             {projectInitBusy ? "Creating..." : "Create Project"}
+          </button>
+        </div>
+      )}
+
+      {showGithubConnect && (
+        <div style={{ padding: "10px 20px", borderBottom: "1px solid #111", background: "#080808", display: "flex", gap: 10, alignItems: "center" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, flex: 1 }}>
+            <input
+              value={githubToken}
+              onChange={e => setGithubToken(e.target.value)}
+              placeholder="GitHub token (PAT)"
+              type="password"
+              style={{ background: "#0b0b0b", border: "1px solid #1a1a1a", color: "#cbd5f5", borderRadius: 6, padding: "8px 10px", fontSize: 11 }}
+            />
+              <div style={{ fontSize: 10, color: "#8b95a7", lineHeight: 1.35 }}>
+                Fine-grained PAT (recommended). Required permissions:<br />
+                Repository: Contents (Read &amp; Write), Pull requests (Read &amp; Write), Metadata (Read-only),
+                Administration (Read &amp; Write), Workflows (Read &amp; Write if triggering Actions),
+                Commit statuses (Read &amp; Write if setting CI statuses).<br />
+                Account: No extra permissions needed — repo creation is covered by Administration above.
+                {" "}
+                <a
+                  href="https://github.com/settings/personal-access-tokens"
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ color: "#9fb4ff", textDecoration: "underline" }}
+                >
+                  Create token
+                </a>
+              </div>
+          </div>
+          <input
+            value={githubOwner}
+            onChange={e => setGithubOwner(e.target.value)}
+            placeholder="Owner (optional org/user)"
+            style={{ width: 200, background: "#0b0b0b", border: "1px solid #1a1a1a", color: "#cbd5f5", borderRadius: 6, padding: "8px 10px", fontSize: 11 }}
+          />
+          <input
+            value={githubRepo}
+            onChange={e => setGithubRepo(e.target.value)}
+            placeholder="Repo name"
+            style={{ width: 200, background: "#0b0b0b", border: "1px solid #1a1a1a", color: "#cbd5f5", borderRadius: 6, padding: "8px 10px", fontSize: 11 }}
+          />
+          <select
+            value={githubVisibility}
+            onChange={e => setGithubVisibility(e.target.value)}
+            style={{ width: 120, background: "#0b0b0b", border: "1px solid #1a1a1a", color: "#cbd5f5", borderRadius: 6, padding: "8px 10px", fontSize: 11 }}
+          >
+            <option value="private">Private</option>
+            <option value="public">Public</option>
+          </select>
+          <button
+            onClick={handleGithubConnect}
+            disabled={!backendLive || !githubToken.trim() || !githubRepo.trim()}
+            style={{ fontSize: 11, padding: "8px 12px", borderRadius: 6, background: "#1f2937", border: "1px solid #374151", color: "#e5e7eb", cursor: "pointer", opacity: (!backendLive || !githubToken.trim() || !githubRepo.trim()) ? 0.4 : 1 }}
+          >
+            Save
           </button>
         </div>
       )}

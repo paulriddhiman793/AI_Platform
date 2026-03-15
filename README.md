@@ -72,7 +72,7 @@ test_api_key.py Standalone Groq API key test script
 
 ## Environment Variables
 
-Create a `.env` in repo root:
+Create a `.env` in repo root (optional):
 
 ```env
 GITHUB_REPO_URL=https://github.com/<owner>/<repo>.git
@@ -84,10 +84,9 @@ GROQ_MIN_INTERVAL_SEC=1.2
 ```
 
 Notes:
-- Startup validates `GITHUB_REPO_URL`.
-- If missing/invalid, startup prompts you and writes back to `.env`.
-- `GITHUB_REPO_URL` must be a **repository URL**, not a profile URL.
-- Groq settings are optional but recommended for stable LLM reporting behavior.
+- `GITHUB_REPO_URL` is optional if you use the GUI “Connect GitHub” flow.
+- If both are present, `GITHUB_REPO_URL` overrides GUI settings.
+- Groq settings are optional and only required for LLM-powered reporting.
 
 ## Setup
 
@@ -97,7 +96,7 @@ Notes:
 python -m api.main
 ```
 
-Startup prompts:
+Startup prompts (only if CLI init is enabled):
 - Output directory for generated projects
 - Project name
 - GitHub repo URL (if not valid in `.env`)
@@ -166,8 +165,8 @@ After assigned agents finish, orchestrator triggers `github` agent to:
 - GUI connected but no real agent behavior:
   - Ensure backend is running via `python -m api.main`.
 - GitHub sync fails:
-  - Check `GITHUB_REPO_URL` points to an existing repo.
-  - Ensure git authentication is configured.
+  - If using GUI connect, confirm the token has repo permissions.
+  - If using `.env`, check `GITHUB_REPO_URL` points to a valid repo.
 - Frontend on wrong port in mock mode:
   - This occurs when backend is offline and GUI runs local mock responses.
 

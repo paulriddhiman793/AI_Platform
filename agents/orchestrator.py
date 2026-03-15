@@ -82,6 +82,20 @@ class OrchestratorAgent(BaseAgent):
             return False
         return any(k in msg for k in BUILD_FLOW_KEYWORDS)
 
+    @staticmethod
+    def _is_training_process_request(message: str) -> bool:
+        msg = message.lower()
+        return any(
+            k in msg
+            for k in (
+                "training process",
+                "training proceeded",
+                "how training",
+                "model transparency",
+                "training explanation",
+            )
+        )
+
     def _analysis_ready(self) -> bool:
         if not workspace.project_root:
             return False
@@ -200,6 +214,21 @@ class OrchestratorAgent(BaseAgent):
             return None
 
         # New user instruction
+        if self._is_training_process_request(content):
+            if task_id:
+                self._active_tasks[task_id] = {
+                    "flow": "generic",
+                    "user_message": content,
+                    "agents_assigned": ["ml_engineer"],
+                    "results": [],
+                }
+            await self.report(
+                "Training-process request received. Assigning: ML Engineer.",
+                task_id,
+            )
+            await self.message("ml_engineer", content, task_id)
+            return None
+
         if self._is_build_flow(content):
             if task_id:
                 phase = "ml_build" if self._analysis_ready() else "data_review"

@@ -476,6 +476,64 @@ async def websocket_endpoint(websocket: WebSocket):
                 asyncio.create_task(_phase3_check_background(workspace.project_root, msg.get("task_id")))
                 continue
 
+            # ---- GitHub connect (store credentials/config only) ----
+            if msg_type == "github_connect":
+                if not workspace.is_initialized or not workspace.project_root:
+                    await broadcast_to_gui({
+                        "type": "team_message",
+                        "from": "server",
+                        "to": "team",
+                        "content": "GitHub connect failed: project not initialized.",
+                        "tag": "ALERT",
+                        "task_id": msg.get("task_id"),
+                    })
+                    continue
+                token = (msg.get("token") or "").strip()
+                owner = (msg.get("owner") or "").strip()
+                repo = (msg.get("repo") or "").strip()
+                visibility = (msg.get("visibility") or "private").strip().lower()
+                if visibility not in ("private", "public"):
+                    visibility = "private"
+                if not token or not repo:
+                    await broadcast_to_gui({
+                        "type": "team_message",
+                        "from": "server",
+                        "to": "team",
+                        "content": "GitHub connect failed: token and repo name are required.",
+                        "tag": "ALERT",
+                        "task_id": msg.get("task_id"),
+                    })
+                    continue
+
+                cfg = {
+                    "token": token,
+                    "owner": owner,
+                    "repo": repo,
+                    "visibility": visibility,
+                }
+                try:
+                    cfg_path = workspace.project_root / "shared" / "github_config.json"
+                    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+                    cfg_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+                    await broadcast_to_gui({
+                        "type": "team_message",
+                        "from": "server",
+                        "to": "team",
+                        "content": "GitHub connected. Repo will be created and synced only when you ask the GitHub agent.",
+                        "tag": "STATUS",
+                        "task_id": msg.get("task_id"),
+                    })
+                except Exception as e:
+                    await broadcast_to_gui({
+                        "type": "team_message",
+                        "from": "server",
+                        "to": "team",
+                        "content": f"GitHub connect failed: {e}",
+                        "tag": "ALERT",
+                        "task_id": msg.get("task_id"),
+                    })
+                continue
+
             # ── File write from frontend ───────────────────────────────────
             if msg_type == "file_write":
                 agent_id     = msg.get("agent_id", "shared")

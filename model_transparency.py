@@ -3993,7 +3993,8 @@ def learning_trace(model, X_train, y_train, X_test, y_test,
 # ══════════════════════════════════════════════════════════════════════════════
 
 def run_pipeline(model, X, y, feature_names=None, task_type=None,
-                 test_size=0.2, scale=True, cv=5, n_walkthrough=5):
+                 test_size=0.2, scale=True, cv=5, n_walkthrough=5,
+                 disable_catboost_swap=False):
     """
     Main entry point.
 
@@ -4016,6 +4017,7 @@ def run_pipeline(model, X, y, feature_names=None, task_type=None,
     CatBoostRegressor and disable StandardScaler (CatBoost handles raw features
     natively and scaling is unnecessary and occasionally harmful).
     Pass model=CatBoostClassifier(...) explicitly to use custom CatBoost params.
+    Set disable_catboost_swap=True to force the user-supplied model.
     """
 
     # ── Coerce inputs ──────────────────────────────────────────────────────────
@@ -4042,7 +4044,7 @@ def run_pipeline(model, X, y, feature_names=None, task_type=None,
 
     # ── CatBoost auto-swap ─────────────────────────────────────────────────────
     model_was_swapped = False
-    if cat_indices and HAS_CB:
+    if cat_indices and HAS_CB and not disable_catboost_swap:
         model_name = type(model).__name__
         if model_name not in ("CatBoostClassifier", "CatBoostRegressor"):
             # Swap to CatBoost and disable scaling
@@ -4084,7 +4086,9 @@ def run_pipeline(model, X, y, feature_names=None, task_type=None,
             print(f"    • {name:<30}  ({cat_reason_map[name]})")
         print()
         if HAS_CB:
-            if model_was_swapped:
+            if disable_catboost_swap:
+                print(f"  ⚠  CatBoost auto-swap disabled — using {type(model).__name__}.")
+            elif model_was_swapped:
                 print(f"  ✅ CatBoost is installed.")
                 print(f"     Model automatically swapped to "
                       f"{'CatBoostClassifier' if task_type=='classification' else 'CatBoostRegressor'}.")
@@ -4348,7 +4352,8 @@ if __name__ == "__main__":
 
 def run_pipeline_from_df(model, df, target_col=None,
                          task_type=None, test_size=0.2,
-                         scale=True, cv=5, n_walkthrough=5):
+                         scale=True, cv=5, n_walkthrough=5,
+                         disable_catboost_swap=False):
     """
     Convenience wrapper around run_pipeline() that accepts a raw DataFrame
     and automatically infers which column is the prediction target.
@@ -4365,6 +4370,7 @@ def run_pipeline_from_df(model, df, target_col=None,
     scale       : bool   (default True; auto-disabled for CatBoost)
     cv          : int    (default 5)
     n_walkthrough: int   (default 5)
+    disable_catboost_swap: bool (default False)
 
     Target inference rules (applied when target_col is None)
     ─────────────────────────────────────────────────────────
@@ -4421,4 +4427,5 @@ def run_pipeline_from_df(model, df, target_col=None,
         scale        = scale,
         cv           = cv,
         n_walkthrough= n_walkthrough,
+        disable_catboost_swap=disable_catboost_swap,
     )

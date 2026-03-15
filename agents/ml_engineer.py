@@ -232,6 +232,13 @@ class MLEngineerAgent(BaseAgent):
             workspace.write("ml_engineer", f"jupyter_output_{label}.txt", output, task_id)
 
         payload = self._extract_json_block(output, "__ML_RESULTS_BEGIN__", "__ML_RESULTS_END__")
+        if payload and workspace.is_initialized:
+            workspace.write(
+                "ml_engineer",
+                f"ml_results_{label}.json",
+                json.dumps(payload, indent=2, default=str),
+                task_id,
+            )
         if payload:
             report, final_report = self._build_ml_reports(Path(ds_path), payload)
         else:
@@ -242,6 +249,213 @@ class MLEngineerAgent(BaseAgent):
             workspace.write("ml_engineer", f"report_{label}.txt", report, task_id)
             workspace.write("ml_engineer", f"final_report_{label}.txt", final_report, task_id)
         return payload
+
+    def _load_ml_results(self, label: str) -> dict | None:
+        if not workspace.is_initialized or not workspace.project_root:
+            return None
+        root = workspace.project_root
+        p = root / "ml_engineer" / f"ml_results_{label}.json"
+        if p.exists():
+            try:
+                return json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                return None
+        # Fallback: parse jupyter output
+        jp = root / "ml_engineer" / f"jupyter_output_{label}.txt"
+        if jp.exists():
+            try:
+                output = jp.read_text(encoding="utf-8", errors="replace")
+                return self._extract_json_block(output, "__ML_RESULTS_BEGIN__", "__ML_RESULTS_END__")
+            except Exception:
+                return None
+        return None
+
+    def _find_dataset_from_message(self, msg: str) -> tuple[Path | None, str | None]:
+        """
+        Return (path, label) where label is 'raw' or 'engineered' when possible.
+        """
+        if not workspace.is_initialized or not workspace.project_root:
+            return None, None
+        root = workspace.project_root
+        ds_dir = root / "shared" / "datasets"
+        if not ds_dir.exists():
+            return None, None
+
+        m = re.search(r"([A-Za-z0-9_.-]+\\.(?:csv|xlsx|xls|parquet|json|tsv))", msg, re.I)
+        if m:
+            name = m.group(1)
+            candidate = ds_dir / name
+            if candidate.exists():
+                label = "engineered" if "engineered" in candidate.name.lower() else "raw"
+                return candidate, label
+
+        if "engineer" in msg or "engineered" in msg:
+            p = self.find_latest_engineered_dataset()
+            return (Path(p) if p else None), "engineered"
+        if "raw" in msg or "original" in msg or "baseline" in msg:
+            p = self._find_latest_raw_dataset()
+            return (Path(p) if p else None), "raw"
+
+        # Default preference: engineered if available
+        p = self.find_latest_engineered_dataset()
+        if p:
+            return Path(p), "engineered"
+        p = self._find_latest_raw_dataset()
+        return (Path(p) if p else None), ("raw" if p else None)
+
+    def _match_model_in_results(self, query: str, payload: dict | None) -> dict | None:
+        if not payload:
+            return None
+        results = payload.get("results", [])
+        if not results:
+            return None
+        q = query.lower()
+        q_norm = re.sub(r"[^a-z0-9]+", "", q)
+
+        def _norm(name: str) -> str:
+            n = name.lower()
+            n = n.replace("regressor", "").replace("classifier", "")
+            n = re.sub(r"[^a-z0-9]+", "", n)
+            return n
+
+        # Direct match against model names
+        for r in results:
+            name = str(r.get("model", "")).lower()
+            if q == name:
+                return r
+        # Substring match
+        for r in results:
+            name = str(r.get("model", "")).lower()
+            if q in name:
+                return r
+        # Normalized match (allows omitting regressor/classifier)
+        for r in results:
+            name = str(r.get("model", ""))
+            if _norm(name) and _norm(name) in q_norm:
+                return r
+        # Keyword mapping
+        aliases = {
+            "xgb": "xgb",
+            "xgboost": "xgb",
+            "lgb": "lgbm",
+            "lgbm": "lgbm",
+            "lightgbm": "lgbm",
+            "catboost": "catboost",
+            "random forest": "randomforest",
+            "randomforest": "randomforest",
+            "gradient boosting": "gradientboost",
+            "linear": "linearregression",
+            "ridge": "ridge",
+            "lasso": "lasso",
+            "elastic": "elasticnet",
+            "svm": "svr",
+            "svr": "svr",
+            "svc": "svc",
+            "knn": "kneighbors",
+            "k-nearest": "kneighbors",
+            "decision tree": "decisiontree",
+        }
+        for k, v in aliases.items():
+            if k in q:
+                for r in results:
+                    name = str(r.get("model", "")).lower()
+                    if v in name:
+                        return r
+        return None
+
+    def _model_import_block(self, model_name: str) -> str:
+        model = model_name
+        if model in ("XGBRegressor", "XGBClassifier"):
+            return "from xgboost import XGBRegressor, XGBClassifier"
+        if model in ("LGBMRegressor", "LGBMClassifier"):
+            return "from lightgbm import LGBMRegressor, LGBMClassifier"
+        if model in ("CatBoostRegressor", "CatBoostClassifier"):
+            return "from catboost import CatBoostRegressor, CatBoostClassifier"
+        mapping = {
+            "LinearRegression": "from sklearn.linear_model import LinearRegression",
+            "LogisticRegression": "from sklearn.linear_model import LogisticRegression",
+            "Ridge": "from sklearn.linear_model import Ridge",
+            "Lasso": "from sklearn.linear_model import Lasso",
+            "ElasticNet": "from sklearn.linear_model import ElasticNet",
+            "RandomForestRegressor": "from sklearn.ensemble import RandomForestRegressor",
+            "RandomForestClassifier": "from sklearn.ensemble import RandomForestClassifier",
+            "GradientBoostingRegressor": "from sklearn.ensemble import GradientBoostingRegressor",
+            "GradientBoostingClassifier": "from sklearn.ensemble import GradientBoostingClassifier",
+            "DecisionTreeRegressor": "from sklearn.tree import DecisionTreeRegressor",
+            "DecisionTreeClassifier": "from sklearn.tree import DecisionTreeClassifier",
+            "SVR": "from sklearn.svm import SVR",
+            "SVC": "from sklearn.svm import SVC",
+            "KNeighborsRegressor": "from sklearn.neighbors import KNeighborsRegressor",
+            "KNeighborsClassifier": "from sklearn.neighbors import KNeighborsClassifier",
+            "HistGradientBoostingRegressor": "from sklearn.ensemble import HistGradientBoostingRegressor",
+            "HistGradientBoostingClassifier": "from sklearn.ensemble import HistGradientBoostingClassifier",
+        }
+        return mapping.get(model, "")
+
+    def _should_scale_for_model(self, model_name: str) -> bool:
+        name = model_name.lower()
+        if any(k in name for k in ("linear", "ridge", "lasso", "elastic", "logistic", "svr", "svc", "knn")):
+            return True
+        return False
+
+    def _build_transparency_code(self, dataset_path: Path, model_name: str,
+                                 params: dict, task_type: str, target_col: str | None) -> str:
+        ds = str(dataset_path).replace("\\", "\\\\")
+        import_stmt = self._model_import_block(model_name)
+        scale_flag = "True" if self._should_scale_for_model(model_name) else "False"
+        target_line = f"target_col = {json.dumps(target_col)}" if target_col else "target_col = None"
+        params_literal = json.dumps(params or {}, indent=2)
+        return f'''import json
+import pandas as pd
+from model_transparency import run_pipeline_from_df, infer_target_column
+{import_stmt}
+
+df = pd.read_csv(r"{ds}")
+{target_line}
+if target_col is None:
+    target_col, _, _, _ = infer_target_column(df, verbose=False)
+
+params = {params_literal}
+model_name = "{model_name}"
+
+try:
+    model = {model_name}(**params)
+except Exception as e:
+    raise SystemExit(f"Failed to instantiate {{model_name}} with params {{params}}: {{e}}")
+
+print("TRAINING_PROCESS_BEGIN")
+print(f"MODEL: {{model_name}}")
+print(f"DATASET: {ds}")
+print(f"TARGET: {{target_col}}")
+print(f"TASK: {task_type}")
+print(f"PARAMS: {{json.dumps(params, indent=2)}}")
+print("TRAINING_PROCESS_END")
+
+run_pipeline_from_df(
+    model, df,
+    target_col=target_col,
+    task_type="{task_type}",
+    test_size=0.2,
+    scale={scale_flag},
+    cv=5,
+    n_walkthrough=5,
+    disable_catboost_swap=True,
+)
+'''
+
+    def _next_training_process_name(self) -> str:
+        if not workspace.is_initialized or not workspace.project_root:
+            return "training_process.txt"
+        root = workspace.project_root / "ml_engineer"
+        base = root / "training_process.txt"
+        if not base.exists():
+            return "training_process.txt"
+        idx = 1
+        while True:
+            candidate = root / f"training_process_{idx}.txt"
+            if not candidate.exists():
+                return candidate.name
+            idx += 1
 
     # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     def _build_ml_reports(self, dataset_path: "Path", payload: dict) -> tuple[str, str]:
@@ -1600,6 +1814,56 @@ for k, v in null_rate.items():
             if workspace.is_initialized:
                 workspace.write("ml_engineer", "probe_output.log", probe_out, task_id)
             await self.report(probe_out, task_id)
+            return None
+
+        if any(k in c for k in ("training process", "training proceeded", "how training", "model transparency")):
+            if not workspace.is_initialized or not workspace.project_root:
+                await self.report("Workspace not initialized. Run training first.", task_id)
+                return None
+
+            ds_path, label = self._find_dataset_from_message(c)
+            if not ds_path:
+                await self.report("No dataset found for this request. Upload data and run training first.", task_id)
+                return None
+
+            payload_results = self._load_ml_results(label or "engineered")
+            if not payload_results:
+                await self.report(
+                    "No training results found for the requested dataset. Run training first.",
+                    task_id,
+                )
+                return None
+
+            model_result = None
+            # Try to match requested model
+            model_result = self._match_model_in_results(c, payload_results)
+            if not model_result:
+                # Fallback to best model if not explicitly matched
+                model_result = payload_results.get("best_model")
+            if not model_result:
+                await self.report("Could not resolve model from training results.", task_id)
+                return None
+
+            model_name = model_result.get("model")
+            params = model_result.get("best_params", {}) or {}
+            task_type = payload_results.get("task_type", "regression")
+            target_col = payload_results.get("target_col")
+
+            code = self._build_transparency_code(
+                Path(ds_path), model_name, params, task_type, target_col
+            )
+            exec_result = await self.run_code_in_jupyter_kernel(code, timeout_s=1200)
+            output = exec_result.get("output", "") or "[no output]"
+
+            if workspace.is_initialized:
+                tp_name = self._next_training_process_name()
+                workspace.write("ml_engineer", tp_name, output, task_id)
+
+            await self.report(
+                "Training process generated via model_transparency.\n"
+                f"Saved: ml_engineer/{tp_name}",
+                task_id,
+            )
             return None
 
         if any(k in c for k in ["model", "train", "eda", "dataset", "pipeline", "predict", "classification", "deploy"]):

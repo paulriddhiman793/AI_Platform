@@ -124,3 +124,4 @@ shared/datasets/
 shared/rag/
 shared/state/
 shared/graphs/
+shared/github_config.json
