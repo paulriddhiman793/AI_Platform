@@ -481,6 +481,21 @@ export default function App() {
       safeLocalStorageSet("auth_token", data.token || "");
       safeLocalStorageSet("auth_email", data.email || authEmail.trim());
       setAuthPassword("");
+      // Clear prior user state when logging in as a different account
+      setProjectName(null);
+      setProjectRoot(null);
+      setProjects([]);
+      setProjectsLoaded(false);
+      setChatList(createInitialChatList());
+      setActiveChat("team");
+      setP2pLog([]);
+      setFileLog([]);
+      setDatasetReady(false);
+      setDatasetInfo(null);
+      projectStateRef.current = {};
+      groupMapRef.current = {};
+      taskRouteRef.current = {};
+      recentMsgRef.current = new Map();
     } catch (_) {
       setAuthError("Auth service unavailable.");
     } finally {
@@ -1250,7 +1265,7 @@ export default function App() {
               Connect GitHub
             </button>
           )}
-          {backendLive && (
+          {backendLive && projectRoot && (
             <button
               onClick={handleOpenFilesPanel}
               style={{ fontSize: 10, padding: "6px 10px", borderRadius: 6, background: "#0b0b0b", border: "1px solid #1a1a1a", color: "#9ca3af", cursor: "pointer" }}
