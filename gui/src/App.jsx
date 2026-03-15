@@ -3,6 +3,17 @@ import { AGENTS, detectScenario, detectDirectResponse } from "./data/agents.js";
 
 // â”€â”€â”€ Config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const WS_URL = "ws://localhost:8000/ws";
+const API_URL = "http://localhost:8000";
+
+const safeLocalStorageGet = (key) => {
+  try { return localStorage.getItem(key) || ""; } catch { return ""; }
+};
+const safeLocalStorageSet = (key, value) => {
+  try { localStorage.setItem(key, value); } catch {}
+};
+const safeLocalStorageRemove = (key) => {
+  try { localStorage.removeItem(key); } catch {}
+};
 
 let _id = 0;
 const uid = () => ++_id;
@@ -15,6 +26,16 @@ const TAG = {
   DONE:   { bg: "#16113a", color: "#a78bfa", border: "#302060" },
 };
 
+const createInitialChatList = () => {
+  const list = [
+    { id: "team", type: "team", messages: [{ id: uid(), from: "orchestrator", tag: "STATUS", content: "AI Engineering Platform online. All agents standing by.\n\nBackend running -> messages go to real Python agents.\nBackend offline -> full mock mode with simulated responses.", timestamp: Date.now() }], unread: 0 },
+  ];
+  for (const a of Object.values(AGENTS)) {
+    list.push({ id: a.id, type: "direct", messages: [{ id: uid(), from: a.id, tag: "STATUS", content: `Hi, I'm ${a.name}. ${a.role}\n\nGive me a direct instruction. If I need another agent, a group thread auto-spawns.`, timestamp: Date.now() }], unread: 0 });
+  }
+  return list;
+};
+
 // â”€â”€â”€ UI Components â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function Avatar({ agentId, size = 32 }) {
   const a = AGENTS[agentId];
@@ -22,6 +43,33 @@ function Avatar({ agentId, size = 32 }) {
   return (
     <div style={{ width: size, height: size, borderRadius: "50%", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: Math.floor(size * 0.44), background: isUser ? "#14122e" : (a?.bgColor || "#111"), border: `2px solid ${isUser ? "#6366f1" : (a?.color || "#333")}` }}>
       {isUser ? "U" : a?.icon}
+    </div>
+  );
+}
+
+function GettingStartedCard({ compact = false }) {
+  const steps = [
+    "Log in and create a new chat",
+    "Upload a CSV dataset",
+    "Optional: click “Check Agents” to run readiness checks",
+    "Click “Run Without Check” to start analysis",
+    "Ask for “train model” when analysis completes",
+    "Use Access Files to view or download outputs",
+    "Example after training: “Show training process for XGB on engineered dataset”",
+  ];
+  return (
+    <div style={{ padding: compact ? "10px 12px" : "14px 16px", borderRadius: 10, background: "#090909", border: "1px solid #141414" }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: "#e8e8f0", marginBottom: 6 }}>Getting Started</div>
+      <div style={{ fontSize: 10, color: "#3a3a3a", marginBottom: 8 }}>
+        Currently supports tabular CSV datasets. CNN, NLP, and hybrid datasets are in progress.
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {steps.map((s, i) => (
+          <div key={i} style={{ fontSize: 10.5, color: "#9ca3af", lineHeight: 1.4 }}>
+            {i + 1}. {s}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -123,7 +171,7 @@ function ConnBadge({ status, project }) {
   }[status] || {};
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-      {project && <div style={{ fontSize: 10, color: "#383838", background: "#0a0a0a", border: "1px solid #181818", padding: "3px 8px", borderRadius: 20 }}>DIR {project}</div>}
+      {project && <div style={{ fontSize: 10, color: "#383838", background: "#0a0a0a", border: "1px solid #181818", padding: "3px 8px", borderRadius: 20 }}>Current Chat: {project}</div>}
       <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10, color: cfg.color, background: cfg.bg, border: `1px solid ${cfg.border}`, padding: "3px 8px", borderRadius: 20 }}>
         <span style={{ width: 5, height: 5, borderRadius: "50%", background: cfg.color, display: "inline-block", animation: status === "connecting" ? "sPulse 1s infinite" : "none" }} />
         {cfg.label}
@@ -132,10 +180,63 @@ function ConnBadge({ status, project }) {
   );
 }
 
-function Sidebar({ agents, activeChat, onSelectChat, chatList }) {
+function ProjectHistory({ projects, activeProjectRoot, onSelectProject, onRefresh }) {
+  return (
+    <div style={{ padding: "10px 12px", borderBottom: "1px solid #0f0f0f" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+        <span style={{ fontSize: 9, color: "#3a3a3a", fontWeight: 700, letterSpacing: ".12em" }}>PROJECTS</span>
+        <button
+          onClick={onRefresh}
+          style={{ fontSize: 9, padding: "2px 6px", borderRadius: 6, background: "#0b0b0b", border: "1px solid #1a1a1a", color: "#9ca3af", cursor: "pointer" }}
+        >
+          Refresh
+        </button>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 140, overflowY: "auto" }}>
+        {projects.map(p => {
+          const isActive = activeProjectRoot && p.root === activeProjectRoot;
+          return (
+            <button
+              key={p.id}
+              onClick={() => onSelectProject(p)}
+              style={{
+                width: "100%",
+                textAlign: "left",
+                padding: "6px 8px",
+                borderRadius: 6,
+                background: isActive ? "#12103a" : "#080808",
+                border: `1px solid ${isActive ? "#6366f155" : "#121212"}`,
+                color: "#cbd5f5",
+                fontSize: 10,
+                cursor: "pointer",
+              }}
+              title={p.root}
+            >
+              <div style={{ fontWeight: 700 }}>{p.name || p.id}</div>
+              <div style={{ fontSize: 9, color: "#3a3a3a" }}>{p.created || p.modified || ""}</div>
+            </button>
+          );
+        })}
+        {projects.length === 0 && (
+          <div style={{ fontSize: 10, color: "#2a2a2a", textAlign: "center", padding: "6px 0" }}>
+            No previous projects.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Sidebar({ agents, activeChat, onSelectChat, chatList, projects, activeProjectRoot, onSelectProject, onRefreshProjects }) {
   const groupChats = chatList.filter(c => c.type === "group");
   return (
     <div style={S.sidebar}>
+      <ProjectHistory
+        projects={projects}
+        activeProjectRoot={activeProjectRoot}
+        onSelectProject={onSelectProject}
+        onRefresh={onRefreshProjects}
+      />
       <div style={{ padding: "12px 12px 6px", borderBottom: "1px solid #0f0f0f", flexShrink: 0 }}>
         <span style={{ fontSize: 9, color: "#3a3a3a", fontWeight: 700, letterSpacing: ".12em" }}>CHATS</span>
       </div>
@@ -234,6 +335,9 @@ function RightPanel({ p2pLog, fileLog, projectRoot }) {
   const [tab, setTab] = useState("p2p");
   return (
     <div style={S.actPanel}>
+      <div style={{ padding: "10px", borderBottom: "1px solid #0f0f0f" }}>
+        <GettingStartedCard compact />
+      </div>
       <div style={{ display: "flex", borderBottom: "1px solid #0f0f0f", flexShrink: 0 }}>
         {[["p2p", "P2P MESSAGES"], ["files", "FILES"]].map(([id, label]) => (
           <button key={id} onClick={() => setTab(id)} style={{ flex: 1, padding: "10px 0", fontSize: 9, fontWeight: 700, letterSpacing: ".1em", cursor: "pointer", border: "none", color: tab === id ? "#c8c8d0" : "#2a2a2a", background: tab === id ? "#0d0d0d" : "transparent", borderBottom: tab === id ? "2px solid #6366f1" : "2px solid transparent" }}>
@@ -265,15 +369,7 @@ export default function App() {
   const [agents, setAgents] = useState(() =>
     Object.fromEntries(Object.entries(AGENTS).map(([k,v]) => [k, { ...v }]))
   );
-  const [chatList, setChatList] = useState(() => {
-    const list = [
-      { id: "team", type: "team", messages: [{ id: uid(), from: "orchestrator", tag: "STATUS", content: "AI Engineering Platform online. All agents standing by.\n\nBackend running -> messages go to real Python agents.\nBackend offline -> full mock mode with simulated responses.", timestamp: Date.now() }], unread: 0 },
-    ];
-    for (const a of Object.values(AGENTS)) {
-      list.push({ id: a.id, type: "direct", messages: [{ id: uid(), from: a.id, tag: "STATUS", content: `Hi, I'm ${a.name}. ${a.role}\n\nGive me a direct instruction. If I need another agent, a group thread auto-spawns.`, timestamp: Date.now() }], unread: 0 });
-    }
-    return list;
-  });
+  const [chatList, setChatList] = useState(() => createInitialChatList());
 
   const [activeChat, setActiveChat]     = useState("team");
   const [typingIn, setTypingIn]         = useState({});
@@ -282,20 +378,35 @@ export default function App() {
   const [connStatus, setConnStatus]     = useState("connecting");
   const [projectName, setProjectName]   = useState(null);
   const [projectRoot, setProjectRoot]   = useState(null);
+  const [projects, setProjects]         = useState([]);
+  const [projectsLoaded, setProjectsLoaded] = useState(false);
   const [p2pLog, setP2pLog]             = useState([]);
   const [fileLog, setFileLog]           = useState([]);
   const [uploading, setUploading]       = useState(false);
   const [datasetReady, setDatasetReady] = useState(false);
   const [datasetInfo, setDatasetInfo]   = useState(null);
-  const [showProjectInit, setShowProjectInit] = useState(false);
-  const [projectPathInput, setProjectPathInput] = useState("");
-  const [projectNameInput, setProjectNameInput] = useState("");
   const [projectInitBusy, setProjectInitBusy] = useState(false);
   const [showGithubConnect, setShowGithubConnect] = useState(false);
   const [githubToken, setGithubToken] = useState("");
   const [githubRepo, setGithubRepo] = useState("");
   const [githubOwner, setGithubOwner] = useState("");
   const [githubVisibility, setGithubVisibility] = useState("private");
+  const [authToken, setAuthToken] = useState(() => safeLocalStorageGet("auth_token"));
+  const [authEmail, setAuthEmail] = useState(() => safeLocalStorageGet("auth_email"));
+  const [authPassword, setAuthPassword] = useState("");
+  const [authMode, setAuthMode] = useState("login");
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState("");
+  const [showFilesPanel, setShowFilesPanel] = useState(false);
+  const [filesIndex, setFilesIndex] = useState([]);
+  const [filesLoading, setFilesLoading] = useState(false);
+  const [filesError, setFilesError] = useState("");
+  const [fileSearch, setFileSearch] = useState("");
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [fileContent, setFileContent] = useState("");
+  const [fileBinary, setFileBinary] = useState(false);
+  const [fileMime, setFileMime] = useState("");
+  const [fileTruncated, setFileTruncated] = useState(false);
 
   const wsRef         = useRef(null);
   const uploadRef     = useRef(null);
@@ -307,6 +418,7 @@ export default function App() {
   const taskRouteRef  = useRef({});
   const groupMapRef   = useRef({});
   const recentMsgRef  = useRef(new Map());
+  const projectStateRef = useRef({});
 
   // Track whether backend is truly live (not just WS connected)
   const backendLive = connStatus === "connected";
@@ -342,6 +454,77 @@ export default function App() {
   }, []);
 
   useEffect(() => { activeChatRef.current = activeChat; }, [activeChat]);
+
+  const handleAuth = useCallback(async () => {
+    if (!authEmail.trim() || !authPassword.trim()) return;
+    setAuthLoading(true);
+    setAuthError("");
+    try {
+      const endpoint = authMode === "register" ? "/auth/register" : "/auth/login";
+      const resp = await fetch(`${API_URL}${endpoint}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: authEmail.trim(), password: authPassword.trim() }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        setAuthError(data?.detail || "Authentication failed.");
+        return;
+      }
+      if (authMode === "register") {
+        setAuthMode("login");
+        setAuthError("Account created. Please log in.");
+        return;
+      }
+      setAuthToken(data.token || "");
+      setAuthEmail(data.email || authEmail.trim());
+      safeLocalStorageSet("auth_token", data.token || "");
+      safeLocalStorageSet("auth_email", data.email || authEmail.trim());
+      setAuthPassword("");
+    } catch (_) {
+      setAuthError("Auth service unavailable.");
+    } finally {
+      setAuthLoading(false);
+    }
+  }, [authEmail, authPassword, authMode]);
+
+  const handleLogout = useCallback(() => {
+    setAuthToken("");
+    setAuthEmail("");
+    safeLocalStorageRemove("auth_token");
+    safeLocalStorageRemove("auth_email");
+    setProjectName(null);
+    setProjectRoot(null);
+    setProjects([]);
+    setProjectsLoaded(false);
+    projectStateRef.current = {};
+  }, []);
+
+  useEffect(() => {
+    if (!authToken) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const resp = await fetch(`${API_URL}/auth/verify`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ auth_token: authToken }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data?.detail || "Session invalid.");
+        if (!cancelled && data?.email) {
+          setAuthEmail(data.email);
+          safeLocalStorageSet("auth_email", data.email);
+        }
+      } catch (_) {
+        if (!cancelled) {
+          handleLogout();
+          setAuthError("Session expired. Please log in again.");
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [authToken, handleLogout]);
 
   // Auto-scroll
   useEffect(() => {
@@ -422,6 +605,50 @@ export default function App() {
     });
   }, []);
 
+  const fetchProjects = useCallback(async () => {
+    if (!authToken) return;
+    try {
+      const res = await fetch(`${API_URL}/projects`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ auth_token: authToken }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Failed to load projects.");
+      setProjects(data.projects || []);
+      setProjectsLoaded(true);
+    } catch (_) {
+      setProjectsLoaded(true);
+    }
+  }, [authToken]);
+
+  useEffect(() => {
+    if (!authToken) return;
+    fetchProjects();
+  }, [authToken, fetchProjects]);
+
+  const switchToProjectState = useCallback((next) => {
+    if (projectRoot) {
+      projectStateRef.current[projectRoot] = {
+        chatList,
+        p2pLog,
+        activeChat,
+      };
+    }
+    const saved = next?.project_root ? projectStateRef.current[next.project_root] : null;
+    setChatList(saved?.chatList || createInitialChatList());
+    setP2pLog(saved?.p2pLog || []);
+    setActiveChat(saved?.activeChat || "team");
+    setProjectName(next?.project_name || null);
+    setProjectRoot(next?.project_root || null);
+    setDatasetReady(false);
+    setDatasetInfo(null);
+    setFileLog([]);
+    groupMapRef.current = {};
+    taskRouteRef.current = {};
+    recentMsgRef.current = new Map();
+  }, [projectRoot, chatList, p2pLog, activeChat]);
+
   // â”€â”€ Handle incoming backend messages â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleWsMessage = useCallback((msg) => {
     const { type, from, to, content, tag, extra, task_id } = msg;
@@ -444,14 +671,11 @@ export default function App() {
     };
 
     if (type === "project_info") {
-      setProjectName(extra?.project_name);
-      setProjectRoot(extra?.project_root);
-      setShowProjectInit(false);
+      switchToProjectState({ project_name: extra?.project_name, project_root: extra?.project_root });
       setProjectInitBusy(false);
-      setDatasetReady(false);
-      setDatasetInfo(null);
       pushMsg("team", "orchestrator",
         `Project: ${extra?.project_name}\nDIR ${extra?.project_root}`, "STATUS");
+      fetchProjects();
       return;
     }
 
@@ -469,6 +693,9 @@ export default function App() {
       const t = setTimeout(() => {
         setTypingIn(prev => ({ ...prev, [targetChatId]: null }));
         pushMsg(targetChatId, from, content, tag || detectTag(content));
+        if (typeof content === "string" && content.toLowerCase().includes("project init failed")) {
+          setProjectInitBusy(false);
+        }
       }, 500);
       timers.current.push(t);
       return;
@@ -512,7 +739,7 @@ export default function App() {
         `Dataset uploaded: ${extra?.filename || "dataset"}\nDIR ${extra?.path || ""}`, "STATUS");
       return;
     }
-  }, [upsertFile, seedFile, getOrCreateGroupChat]);
+  }, [upsertFile, seedFile, getOrCreateGroupChat, switchToProjectState, fetchProjects]);
 
   useEffect(() => {
     if (wsRef.current) {
@@ -546,14 +773,15 @@ export default function App() {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       // Send to backend â†’ Python workspace.write() â†’ real file on disk
       // Backend will confirm back via "file_written" message â†’ upsertFile()
-      wsRef.current.send(JSON.stringify({
-        type: "file_write", agent_id: agent, filename, content, from: fromAgent,
-      }));
+        wsRef.current.send(JSON.stringify({
+          type: "file_write", agent_id: agent, filename, content, from: fromAgent,
+          auth_token: authToken,
+        }));
     } else {
       // Backend offline â€” update UI only (no disk write possible)
       upsertFile(agent, filename, `[offline]/${agent}/${filename}`);
     }
-  }, [upsertFile]);
+    }, [upsertFile, authToken]);
 
   // â”€â”€ Group chat spawn (always local â€” direct/group chats don't touch backend)
   const spawnGroupChat = useCallback((groupDef, triggerChatId) => {
@@ -635,10 +863,11 @@ export default function App() {
         };
         // âœ… FIX 1: Backend live â€” send ONLY to backend, do NOT run mock scenario
         // Real Python agents respond â†’ messages stream back via WebSocket
-        wsRef.current.send(JSON.stringify({
-          type: "user_message", content: text, to: "team",
-          task_id: taskId,
-        }));
+          wsRef.current.send(JSON.stringify({
+            type: "user_message", content: text, to: "team",
+            task_id: taskId,
+            auth_token: authToken,
+          }));
       } else {
         // Backend offline â€” run mock scenario (it handles everything locally)
         const scenario = detectScenario(text);
@@ -660,12 +889,13 @@ export default function App() {
           groupChatId: null,
         };
         setTyping(chatId, agentId);
-        wsRef.current.send(JSON.stringify({
-          type: "user_message",
-          content: text,
-          to: agentId,
-          task_id: taskId,
-        }));
+          wsRef.current.send(JSON.stringify({
+            type: "user_message",
+            content: text,
+            to: agentId,
+            task_id: taskId,
+            auth_token: authToken,
+          }));
         return;
       }
 
@@ -704,7 +934,7 @@ export default function App() {
       }, 1500);
       timers.current.push(t1, t2);
     }
-  }, [inputs, chatList, isBusy, backendLive, addMsg, setAgentStatus, setTyping, runTeamScenario, spawnGroupChat, fireFileWrite]);
+  }, [inputs, chatList, isBusy, backendLive, addMsg, setAgentStatus, setTyping, runTeamScenario, spawnGroupChat, fireFileWrite, authToken]);
 
   const handleDatasetUpload = useCallback(async (file) => {
     if (!file || !backendLive || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
@@ -725,6 +955,7 @@ export default function App() {
         filename: file.name,
         content_b64: btoa(binary),
         to: "orchestrator",
+        auth_token: authToken,
       }));
     } catch (_) {
       // Silent by design.
@@ -732,7 +963,7 @@ export default function App() {
       setUploading(false);
       if (uploadRef.current) uploadRef.current.value = "";
     }
-  }, [backendLive]);
+  }, [backendLive, authToken]);
 
   const handlePhase3Check = useCallback(() => {
     if (!backendLive || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
@@ -741,9 +972,10 @@ export default function App() {
     wsRef.current.send(JSON.stringify({
       type: "phase3_check",
       task_id: `phase3_${Date.now()}`,
+      auth_token: authToken,
     }));
     setDatasetReady(false);
-  }, [backendLive, addMsg]);
+  }, [backendLive, addMsg, authToken]);
 
   const handleRunDirect = useCallback(() => {
     if (!backendLive || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
@@ -756,14 +988,15 @@ export default function App() {
     };
     setActiveChat("team");
     addMsg("team", "user", "analyse data", null);
-    wsRef.current.send(JSON.stringify({
-      type: "user_message",
-      content: "analyse data",
-      to: "team",
-      task_id: taskId,
-    }));
+      wsRef.current.send(JSON.stringify({
+        type: "user_message",
+        content: "analyse data",
+        to: "team",
+        task_id: taskId,
+        auth_token: authToken,
+      }));
     setDatasetReady(false);
-  }, [backendLive, addMsg]);
+  }, [backendLive, addMsg, authToken]);
 
   const handleGithubConnect = useCallback(() => {
     if (!backendLive || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
@@ -778,23 +1011,215 @@ export default function App() {
       repo: githubRepo.trim(),
       visibility: githubVisibility,
       task_id: taskId,
+      auth_token: authToken,
     }));
     setShowGithubConnect(false);
-  }, [backendLive, addMsg, githubToken, githubRepo, githubOwner, githubVisibility]);
+  }, [backendLive, addMsg, githubToken, githubRepo, githubOwner, githubVisibility, authToken]);
 
-  const handleInitProject = useCallback(() => {
+  const fetchFilesIndex = useCallback(async () => {
+    if (!authToken) return;
+    setFilesLoading(true);
+    setFilesError("");
+    try {
+      const res = await fetch(`${API_URL}/files`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ auth_token: authToken }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Failed to load file list.");
+      const list = (data.files || []).slice().sort((a, b) => a.path.localeCompare(b.path));
+      setFilesIndex(list);
+      if (!projectRoot && data.project_root) setProjectRoot(data.project_root);
+      setFileLog(list.map(f => {
+        const parts = String(f.path || "").split("/");
+        const agent_id = parts[0] || "shared";
+        const filename = parts.slice(1).join("/") || parts[0] || f.path;
+        return {
+          id: uid(),
+          agent_id,
+          filename,
+          full_path: (data.project_root ? `${data.project_root}\\${f.path}` : f.path),
+          timestamp: Date.now(),
+          version: 1,
+        };
+      }));
+    } catch (err) {
+      setFilesError(err?.message || String(err));
+    } finally {
+      setFilesLoading(false);
+    }
+  }, [authToken, projectRoot]);
+
+  const openFile = useCallback(async (path) => {
+    if (!authToken || !path) return;
+    setSelectedFile(path);
+    setFileContent("");
+    setFileBinary(false);
+    setFileMime("");
+    setFileTruncated(false);
+    try {
+      const res = await fetch(`${API_URL}/file`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ auth_token: authToken, path }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Failed to load file.");
+      setFileBinary(Boolean(data.binary));
+      setFileMime(data.mime || "");
+      setFileTruncated(Boolean(data.truncated));
+      if (data.binary && data.content_b64) {
+        setFileContent(`data:${data.mime};base64,${data.content_b64}`);
+      } else if (!data.binary) {
+        setFileContent(data.content || "");
+      } else {
+        setFileContent("");
+      }
+    } catch (err) {
+      setFileContent(`Error: ${err?.message || err}`);
+    }
+  }, [authToken]);
+
+  const handleOpenFilesPanel = useCallback(() => {
+    if (!authToken) return;
+    setShowFilesPanel(true);
+    fetchFilesIndex();
+  }, [authToken, fetchFilesIndex]);
+
+  const handleSelectProject = useCallback(async (proj) => {
+    if (!authToken || !proj?.id) return;
+    try {
+      const res = await fetch(`${API_URL}/projects/select`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ auth_token: authToken, project_id: proj.id }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Failed to switch project.");
+      switchToProjectState({ project_name: data.project_name, project_root: data.project_root });
+      fetchFilesIndex();
+    } catch (err) {
+      setFilesError(err?.message || String(err));
+    }
+  }, [authToken, switchToProjectState, fetchFilesIndex]);
+
+  const handleDownloadZip = useCallback(async () => {
+    if (!authToken) return;
+    try {
+      const res = await fetch(`${API_URL}/project_zip`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ auth_token: authToken }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || "Failed to download ZIP.");
+      }
+      const blob = await res.blob();
+      const name = `${projectName || "project"}.zip`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setFilesError(err?.message || String(err));
+    }
+  }, [authToken, projectName]);
+
+  const sendInitProject = useCallback((name) => {
     if (!backendLive || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-    if (!projectPathInput.trim() || !projectNameInput.trim()) return;
+    if (!name || !name.trim()) return;
     setProjectInitBusy(true);
     wsRef.current.send(JSON.stringify({
       type: "init_project",
-      output_path: projectPathInput.trim(),
-      project_name: projectNameInput.trim(),
+      project_name: name.trim(),
       task_id: `init_${Date.now()}`,
+      auth_token: authToken,
     }));
-  }, [backendLive, projectPathInput, projectNameInput]);
+  }, [backendLive, authToken]);
+
+  const handleNewChat = useCallback(() => {
+    if (!backendLive || !authToken || projectInitBusy) return;
+    const name = `chat_${new Date().toISOString().replace(/[-:]/g, "").slice(0, 15)}`;
+    sendInitProject(name);
+  }, [backendLive, authToken, projectInitBusy, sendInitProject]);
+
+  useEffect(() => {
+    if (!backendLive || !authToken || projectRoot || projectInitBusy) return;
+    if (!projectsLoaded) return;
+    if (projects.length > 0) return;
+    const name = `chat_${new Date().toISOString().replace(/[-:]/g, "").slice(0, 15)}`;
+    sendInitProject(name);
+  }, [backendLive, authToken, projectRoot, projectInitBusy, projectsLoaded, projects.length, sendInitProject]);
 
   const currentChat = chatList.find(c => c.id === activeChat);
+
+  if (!authToken) {
+    return (
+      <div style={S.root}>
+        <style>{CSS}</style>
+        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 24, gap: 20, flexWrap: "wrap" }}>
+          <div style={{ width: 420, background: "#070707", border: "1px solid #141414", borderRadius: 14, padding: 22 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+              <div style={S.logo}>AI</div>
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: "#e8e8f0" }}>AI Engineering Platform</div>
+                <div style={{ fontSize: 10, color: "#3a3a3a", letterSpacing: ".08em", textTransform: "uppercase" }}>
+                  Secure Login
+                </div>
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+              {["login", "register"].map(m => (
+                <button
+                  key={m}
+                  onClick={() => setAuthMode(m)}
+                  style={{
+                    flex: 1, padding: "6px 8px", borderRadius: 8, border: "1px solid #1a1a1a",
+                    background: authMode === m ? "#12103a" : "#0b0b0b",
+                    color: authMode === m ? "#a5b4fc" : "#707070", fontSize: 11, fontWeight: 700,
+                  }}
+                >
+                  {m === "login" ? "Log In" : "Sign Up"}
+                </button>
+              ))}
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <input
+                value={authEmail}
+                onChange={e => setAuthEmail(e.target.value)}
+                placeholder="Email"
+                style={{ background: "#0b0b0b", border: "1px solid #1a1a1a", color: "#cbd5f5", borderRadius: 8, padding: "10px 12px", fontSize: 12 }}
+              />
+              <input
+                value={authPassword}
+                onChange={e => setAuthPassword(e.target.value)}
+                placeholder="Password"
+                type="password"
+                style={{ background: "#0b0b0b", border: "1px solid #1a1a1a", color: "#cbd5f5", borderRadius: 8, padding: "10px 12px", fontSize: 12 }}
+              />
+              {authError && <div style={{ fontSize: 10, color: "#f87171" }}>{authError}</div>}
+              <button
+                onClick={handleAuth}
+                disabled={authLoading || !authEmail.trim() || !authPassword.trim()}
+                style={{ padding: "10px 12px", borderRadius: 8, background: "#1f2937", border: "1px solid #374151", color: "#e5e7eb", cursor: "pointer", opacity: (authLoading || !authEmail.trim() || !authPassword.trim()) ? 0.5 : 1 }}
+              >
+                {authLoading ? "Please wait..." : (authMode === "login" ? "Log In" : "Create Account")}
+              </button>
+            </div>
+          </div>
+          <div style={{ width: 420 }}>
+            <GettingStartedCard />
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={S.root}>
@@ -811,10 +1236,10 @@ export default function App() {
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           {backendLive && (
             <button
-              onClick={() => setShowProjectInit(v => !v)}
+              onClick={handleNewChat}
               style={{ fontSize: 10, padding: "6px 10px", borderRadius: 6, background: "#0b0b0b", border: "1px solid #1a1a1a", color: "#9ca3af", cursor: "pointer" }}
             >
-              {projectRoot ? "New Project" : "Set Project"}
+              New Chat
             </button>
           )}
           {backendLive && (
@@ -825,31 +1250,133 @@ export default function App() {
               Connect GitHub
             </button>
           )}
+          {backendLive && (
+            <button
+              onClick={handleOpenFilesPanel}
+              style={{ fontSize: 10, padding: "6px 10px", borderRadius: 6, background: "#0b0b0b", border: "1px solid #1a1a1a", color: "#9ca3af", cursor: "pointer" }}
+            >
+              Access Files
+            </button>
+          )}
+          {authEmail && (
+            <div style={{ fontSize: 10, color: "#3a3a3a", background: "#0a0a0a", border: "1px solid #181818", padding: "3px 8px", borderRadius: 20 }}>
+              {authEmail}
+            </div>
+          )}
+          {authToken && (
+            <button
+              onClick={handleLogout}
+              style={{ fontSize: 10, padding: "6px 10px", borderRadius: 6, background: "#120606", border: "1px solid #3a1414", color: "#fca5a5", cursor: "pointer" }}
+            >
+              Log Out
+            </button>
+          )}
           <ConnBadge status={connStatus} project={projectName} />
         </div>
       </header>
 
-      {(showProjectInit || !projectRoot) && (
+      {showFilesPanel && (
+        <div style={S.filesOverlay}>
+          <div style={S.filesPanel}>
+            <div style={S.filesHeader}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#e8e8f0" }}>Project Files</div>
+                <div style={{ fontSize: 10, color: "#3a3a3a" }}>{projectRoot || "No project initialized"}</div>
+              </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <button
+                  onClick={fetchFilesIndex}
+                  disabled={filesLoading}
+                  style={{ fontSize: 10, padding: "6px 10px", borderRadius: 6, background: "#0b0b0b", border: "1px solid #1a1a1a", color: "#9ca3af", cursor: "pointer", opacity: filesLoading ? 0.5 : 1 }}
+                >
+                  {filesLoading ? "Refreshing..." : "Refresh"}
+                </button>
+                <button
+                  onClick={handleDownloadZip}
+                  disabled={filesLoading}
+                  style={{ fontSize: 10, padding: "6px 10px", borderRadius: 6, background: "#0b0b0b", border: "1px solid #1a1a1a", color: "#9ca3af", cursor: "pointer", opacity: filesLoading ? 0.5 : 1 }}
+                >
+                  Download ZIP
+                </button>
+                <button
+                  onClick={() => setShowFilesPanel(false)}
+                  style={{ fontSize: 10, padding: "6px 10px", borderRadius: 6, background: "#120606", border: "1px solid #3a1414", color: "#fca5a5", cursor: "pointer" }}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+            <div style={S.filesBody}>
+              <div style={S.filesList}>
+                <input
+                  value={fileSearch}
+                  onChange={e => setFileSearch(e.target.value)}
+                  placeholder="Search files..."
+                  style={{ background: "#0b0b0b", border: "1px solid #1a1a1a", color: "#cbd5f5", borderRadius: 6, padding: "8px 10px", fontSize: 11, marginBottom: 8 }}
+                />
+                {filesError && <div style={{ fontSize: 10, color: "#f87171", marginBottom: 8 }}>{filesError}</div>}
+                <div style={{ overflowY: "auto", flex: 1 }}>
+                  {(filesIndex || [])
+                    .filter(f => !fileSearch || f.path.toLowerCase().includes(fileSearch.toLowerCase()))
+                    .map(f => (
+                      <button
+                        key={f.path}
+                        onClick={() => openFile(f.path)}
+                        style={{
+                          width: "100%",
+                          textAlign: "left",
+                          padding: "8px 10px",
+                          marginBottom: 4,
+                          borderRadius: 6,
+                          background: selectedFile === f.path ? "#12103a" : "#080808",
+                          border: `1px solid ${selectedFile === f.path ? "#6366f155" : "#121212"}`,
+                          color: "#cbd5f5",
+                          fontSize: 11,
+                          cursor: "pointer",
+                        }}
+                      >
+                        <div style={{ fontWeight: 600 }}>{f.path}</div>
+                        <div style={{ fontSize: 9, color: "#3a3a3a" }}>{(f.size || 0).toLocaleString()} bytes</div>
+                      </button>
+                    ))}
+                  {(!filesLoading && (!filesIndex || filesIndex.length === 0)) && (
+                    <div style={{ fontSize: 10, color: "#3a3a3a", textAlign: "center", marginTop: 12 }}>
+                      No files found.
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div style={S.filesPreview}>
+                {!selectedFile && (
+                  <div style={{ fontSize: 11, color: "#2a2a2a" }}>Select a file to preview.</div>
+                )}
+                {selectedFile && fileBinary && fileContent && (
+                  <img alt={selectedFile} src={fileContent} style={{ maxWidth: "100%", maxHeight: "100%", borderRadius: 8 }} />
+                )}
+                {selectedFile && fileBinary && !fileContent && (
+                  <div style={{ fontSize: 11, color: "#2a2a2a" }}>Binary file preview not available.</div>
+                )}
+                {selectedFile && !fileBinary && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8, height: "100%" }}>
+                    <div style={{ fontSize: 10, color: "#3a3a3a" }}>
+                      {selectedFile} {fileTruncated ? " (truncated)" : ""}
+                    </div>
+                    <pre style={{ flex: 1, overflow: "auto", background: "#060606", border: "1px solid #141414", borderRadius: 8, padding: 12, fontSize: 11, color: "#cbd5f5", whiteSpace: "pre-wrap" }}>
+                      {fileContent}
+                    </pre>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {(!projectRoot || projectInitBusy) && (
         <div style={{ padding: "10px 20px", borderBottom: "1px solid #111", background: "#080808", display: "flex", gap: 10, alignItems: "center" }}>
-          <input
-            value={projectPathInput}
-            onChange={e => setProjectPathInput(e.target.value)}
-            placeholder="Output path (e.g. D:\\Downloads)"
-            style={{ flex: 1, background: "#0b0b0b", border: "1px solid #1a1a1a", color: "#cbd5f5", borderRadius: 6, padding: "8px 10px", fontSize: 11 }}
-          />
-          <input
-            value={projectNameInput}
-            onChange={e => setProjectNameInput(e.target.value)}
-            placeholder="Project name"
-            style={{ width: 220, background: "#0b0b0b", border: "1px solid #1a1a1a", color: "#cbd5f5", borderRadius: 6, padding: "8px 10px", fontSize: 11 }}
-          />
-          <button
-            onClick={handleInitProject}
-            disabled={!backendLive || projectInitBusy || !projectPathInput.trim() || !projectNameInput.trim()}
-            style={{ fontSize: 11, padding: "8px 12px", borderRadius: 6, background: "#1f2937", border: "1px solid #374151", color: "#e5e7eb", cursor: "pointer", opacity: (!backendLive || projectInitBusy || !projectPathInput.trim() || !projectNameInput.trim()) ? 0.4 : 1 }}
-          >
-            {projectInitBusy ? "Creating..." : "Create Project"}
-          </button>
+          <div style={{ fontSize: 11, color: "#3a3a3a" }}>
+            {projectInitBusy ? "Creating new chat..." : "No active chat yet."}
+          </div>
         </div>
       )}
 
@@ -911,7 +1438,16 @@ export default function App() {
       )}
 
       <div style={S.body}>
-        <Sidebar agents={agents} activeChat={activeChat} onSelectChat={setActiveChat} chatList={chatList} />
+        <Sidebar
+          agents={agents}
+          activeChat={activeChat}
+          onSelectChat={setActiveChat}
+          chatList={chatList}
+          projects={projects}
+          activeProjectRoot={projectRoot}
+          onSelectProject={handleSelectProject}
+          onRefreshProjects={fetchProjects}
+        />
 
         <div style={S.chatArea}>
           <ChatHeader chat={currentChat} agents={agents} />
@@ -1036,6 +1572,12 @@ const S = {
   textarea: { flex: 1, background: "#090909", border: "1px solid #1a1a1a", borderRadius: 9, padding: "10px 14px", color: "#c8c8d0", fontSize: 13, resize: "none", fontFamily: "inherit", lineHeight: 1.5, outline: "none", transition: "border-color .2s" },
   sendBtn:  { width: 42, height: 42, borderRadius: 9, border: "none", color: "#fff", fontSize: 18, cursor: "pointer", fontWeight: 700, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", transition: "opacity .15s" },
   actPanel: { borderLeft: "1px solid #0f0f0f", background: "#060606", display: "flex", flexDirection: "column", overflow: "hidden" },
+  filesOverlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.65)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: 20 },
+  filesPanel: { width: "90vw", height: "80vh", background: "#070707", border: "1px solid #141414", borderRadius: 12, display: "flex", flexDirection: "column", overflow: "hidden" },
+  filesHeader: { padding: "12px 16px", borderBottom: "1px solid #111", display: "flex", alignItems: "center", justifyContent: "space-between" },
+  filesBody: { flex: 1, display: "grid", gridTemplateColumns: "320px 1fr", minHeight: 0 },
+  filesList: { borderRight: "1px solid #111", padding: 12, display: "flex", flexDirection: "column", minHeight: 0 },
+  filesPreview: { padding: 12, minHeight: 0, overflow: "hidden" },
 };
 
 const CSS = `

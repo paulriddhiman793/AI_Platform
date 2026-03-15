@@ -125,3 +125,7 @@ shared/rag/
 shared/state/
 shared/graphs/
 shared/github_config.json
+
+# Platform project storage (runtime output)
+platform_projects/
+platform_projects/**/

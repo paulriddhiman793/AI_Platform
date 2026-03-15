@@ -113,7 +113,41 @@ Open:
 - GUI: `http://localhost:5173`
 - Backend WS/API: `http://localhost:8000`
 
-## How to Use
+## How to Use (Step-by-Step)
+
+### What the Platform Currently Supports
+
+- **Supported now:** Tabular datasets (CSV).
+- **In progress:** CNN (image), NLP (text), and hybrid datasets. These are not yet enabled in the workflow.
+
+### Step-by-Step Workflow
+
+1. **Start the backend**  
+   Run `python -m api.main` to bring the agents online and start the WebSocket/API server.
+
+2. **Start the GUI**  
+   In another terminal:  
+   `cd gui` → `npm install` (first time only) → `npm run dev`
+
+3. **Log in**  
+   Use the login screen to authenticate. This creates a session for all actions.
+
+4. **Create a chat/project**  
+   Click **New Chat** to create a project workspace. Every run is stored in a platform-managed project folder.
+
+5. **Upload your dataset (CSV)**  
+   Use the **Upload** button. The dataset is stored inside the project under `shared/datasets/`.
+
+6. **Run analysis**  
+   Use Team chat and send **"analyse data"**.  
+   The Data Scientist + Data Analyst generate reports and graphs in the project workspace.
+
+7. **Train models**  
+   After analysis completes, send **"train model"**.  
+   ML Engineer trains models on raw + engineered datasets and writes reports + metrics.
+
+8. **Access outputs**  
+   Click **Access Files** to view all generated files inside the platform UI, or download a ZIP of the full project.
 
 ### Team Chat
 

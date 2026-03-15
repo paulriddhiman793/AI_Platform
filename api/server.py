@@ -13,15 +13,19 @@ import re
 import subprocess
 import sys
 import uuid
+import io
+import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Set
 import time
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.message_bus import bus, send_to_agent
+from api.auth import authenticate, create_user, ensure_default_user, DEFAULT_EMAIL
 from tools.rag_store import build_hybrid_index_from_text
 from tools.workspace import workspace
 
@@ -36,9 +40,288 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Ensure default user exists
+try:
+    ensure_default_user()
+except Exception:
+    pass
+
+
+@app.post("/auth/register")
+async def register(payload: dict):
+    email = (payload.get("email") or "").strip().lower()
+    password = (payload.get("password") or "").strip()
+    if not email or not password:
+        raise HTTPException(status_code=400, detail="Email and password are required.")
+    ok, msg = create_user(email, password)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"status": "ok", "message": "User created."}
+
+
+@app.post("/auth/login")
+async def login(payload: dict):
+    email = (payload.get("email") or "").strip().lower()
+    password = (payload.get("password") or "").strip()
+    if not email or not password:
+        raise HTTPException(status_code=400, detail="Email and password are required.")
+    if not authenticate(email, password):
+        raise HTTPException(status_code=401, detail="Invalid credentials.")
+    _load_tokens()
+    token = uuid.uuid4().hex
+    _active_tokens[token] = email
+    _save_tokens()
+    return {"status": "ok", "token": token, "email": email}
+
+
+@app.post("/auth/verify")
+async def verify(payload: dict):
+    token = payload.get("auth_token")
+    email = _require_auth_token(token)
+    return {"status": "ok", "email": email}
+
+
+@app.post("/open_project")
+async def open_project(payload: dict):
+    token = payload.get("auth_token")
+    email = _require_auth_token(token)
+    if not workspace.is_initialized or not workspace.project_root:
+        raise HTTPException(status_code=400, detail="Project not initialized.")
+    _assert_project_owner(email)
+    path = workspace.project_root
+    return {"status": "ok", "path": str(path)}
+
+
+def _safe_rel_path(rel: str) -> Path:
+    rel = (rel or "").strip().lstrip("/").lstrip("\\")
+    if not rel or ".." in rel.replace("\\", "/").split("/"):
+        raise HTTPException(status_code=400, detail="Invalid path.")
+    base = workspace.project_root
+    if not base:
+        raise HTTPException(status_code=400, detail="Project not initialized.")
+    full = (base / rel).resolve()
+    if base not in full.parents and full != base:
+        raise HTTPException(status_code=400, detail="Path outside project.")
+    return full
+
+
+@app.post("/files")
+async def list_files(payload: dict):
+    token = payload.get("auth_token")
+    email = _require_auth_token(token)
+    if not workspace.is_initialized or not workspace.project_root:
+        raise HTTPException(status_code=400, detail="Project not initialized.")
+    _assert_project_owner(email)
+    base = workspace.project_root
+    files = []
+    for rel in workspace.list_files():
+        full = (base / rel)
+        try:
+            stat = full.stat()
+            files.append({
+                "path": rel.replace("\\", "/"),
+                "size": stat.st_size,
+                "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+            })
+        except Exception:
+            continue
+    return {"status": "ok", "project_root": str(base), "files": files}
+
+
+@app.post("/file")
+async def read_file(payload: dict):
+    token = payload.get("auth_token")
+    rel = payload.get("path")
+    email = _require_auth_token(token)
+    if not workspace.is_initialized or not workspace.project_root:
+        raise HTTPException(status_code=400, detail="Project not initialized.")
+    _assert_project_owner(email)
+    full = _safe_rel_path(rel)
+    if not full.exists() or not full.is_file():
+        raise HTTPException(status_code=404, detail="File not found.")
+    data = full.read_bytes()
+    max_bytes = 1_000_000
+    truncated = False
+    if len(data) > max_bytes:
+        data = data[:max_bytes]
+        truncated = True
+    head = data[:2048]
+    is_binary = b"\x00" in head
+    ext = full.suffix.lower()
+    if is_binary and ext in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
+        b64 = base64.b64encode(data).decode("utf-8")
+        mime = {
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".gif": "image/gif",
+            ".webp": "image/webp",
+        }.get(ext, "application/octet-stream")
+        return {
+            "status": "ok",
+            "path": str(rel),
+            "binary": True,
+            "mime": mime,
+            "content_b64": b64,
+            "truncated": truncated,
+        }
+    if is_binary:
+        return {
+            "status": "ok",
+            "path": str(rel),
+            "binary": True,
+            "mime": "application/octet-stream",
+            "content_b64": None,
+            "truncated": truncated,
+        }
+    text = data.decode("utf-8", errors="replace")
+    return {
+        "status": "ok",
+        "path": str(rel),
+        "binary": False,
+        "content": text,
+        "truncated": truncated,
+    }
+
+
+@app.post("/project_zip")
+async def download_project_zip(payload: dict):
+    token = payload.get("auth_token")
+    email = _require_auth_token(token)
+    if not workspace.is_initialized or not workspace.project_root:
+        raise HTTPException(status_code=400, detail="Project not initialized.")
+    _assert_project_owner(email)
+    buf = io.BytesIO()
+    base = workspace.project_root
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for rel in workspace.list_files():
+            full = base / rel
+            if full.is_file():
+                zf.write(full, arcname=rel.replace("\\", "/"))
+    buf.seek(0)
+    filename = f"{workspace.project_name or 'project'}.zip"
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return StreamingResponse(buf, media_type="application/zip", headers=headers)
+
+
+@app.post("/projects")
+async def list_projects(payload: dict):
+    token = payload.get("auth_token")
+    email = _require_auth_token(token)
+    base = _ensure_platform_root()
+    projects = []
+    for p in base.iterdir():
+        if not p.is_dir() or p.name.startswith("."):
+            continue
+        owner = _get_project_owner(p)
+        if not owner:
+            owner = _maybe_claim_legacy_project(p, email)
+        if not owner or owner != email.lower():
+            continue
+        info = p / ".project_info"
+        name = p.name
+        created = None
+        if info.exists():
+            try:
+                lines = info.read_text(encoding="utf-8", errors="replace").splitlines()
+                for line in lines:
+                    if line.lower().startswith("project:"):
+                        name = line.split(":", 1)[1].strip()
+                    if line.lower().startswith("created:"):
+                        created = line.split(":", 1)[1].strip()
+            except Exception:
+                pass
+        try:
+            stat = p.stat()
+            mtime = datetime.fromtimestamp(stat.st_mtime).isoformat()
+        except Exception:
+            mtime = None
+        projects.append({
+            "id": p.name,
+            "name": name,
+            "root": str(p),
+            "owner": owner,
+            "created": created,
+            "modified": mtime,
+        })
+    projects.sort(key=lambda x: x.get("modified") or "", reverse=True)
+    return {"status": "ok", "projects": projects}
+
+
+@app.post("/projects/select")
+async def select_project(payload: dict):
+    token = payload.get("auth_token")
+    email = _require_auth_token(token)
+    project_id = (payload.get("project_id") or "").strip()
+    if not project_id:
+        raise HTTPException(status_code=400, detail="project_id required.")
+    base = _ensure_platform_root()
+    project_root = (base / project_id).resolve()
+    if not project_root.exists():
+        raise HTTPException(status_code=404, detail="Project not found.")
+    owner = _get_project_owner(project_root)
+    if not owner:
+        owner = _maybe_claim_legacy_project(project_root, email)
+    if owner and owner != email.lower():
+        raise HTTPException(status_code=403, detail="Forbidden.")
+    workspace.load_project(project_root)
+    global _active_project_owner
+    _active_project_owner = email.lower()
+    return {
+        "status": "ok",
+        "project_name": workspace.project_name,
+        "project_root": str(workspace.project_root),
+    }
+
 connected_clients: Set[WebSocket] = set()
 _recent_user_messages: dict[tuple[str, str], float] = {}
 _recent_bus_messages: dict[tuple, float] = {}
+_active_tokens: dict[str, str] = {}
+_tokens_loaded = False
+_active_project_owner: str | None = None
+
+
+def _ensure_platform_root() -> Path:
+    root = os.getenv("PLATFORM_STORAGE_ROOT")
+    if root:
+        base = Path(root)
+    else:
+        base = Path(__file__).resolve().parent.parent / "platform_projects"
+    base.mkdir(parents=True, exist_ok=True)
+    if not workspace.output_path:
+        workspace.configure(str(base))
+    return base
+
+
+def _tokens_path() -> Path:
+    base = _ensure_platform_root()
+    return base / ".auth_tokens.json"
+
+
+def _load_tokens() -> None:
+    global _tokens_loaded, _active_tokens
+    if _tokens_loaded:
+        return
+    path = _tokens_path()
+    if not path.exists():
+        _tokens_loaded = True
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            _active_tokens.update({str(k): str(v) for k, v in data.items()})
+    except Exception:
+        pass
+    _tokens_loaded = True
+
+
+def _save_tokens() -> None:
+    try:
+        path = _tokens_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(_active_tokens, indent=2), encoding="utf-8")
+    except Exception:
+        pass
 
 
 def _dedup_bus_message(key: tuple, window_s: float = 1.5) -> bool:
@@ -62,6 +345,67 @@ def _safe_dataset_name(name: str) -> str:
     raw = raw.replace("\\", "/").split("/")[-1]
     cleaned = re.sub(r"[^A-Za-z0-9._-]", "_", raw)
     return cleaned or "dataset.csv"
+
+
+def _require_auth(msg: dict) -> str:
+    return _require_auth_token(msg.get("auth_token"))
+
+
+def _require_auth_token(token: str) -> str:
+    token = (token or "").strip()
+    if not _tokens_loaded:
+        _load_tokens()
+    email = _active_tokens.get(token)
+    if not token or not email:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return email
+
+
+def _get_project_owner(project_root: Path) -> str | None:
+    owner_file = project_root / ".owner"
+    if owner_file.exists():
+        try:
+            return owner_file.read_text(encoding="utf-8", errors="replace").strip().lower()
+        except Exception:
+            return None
+    # Legacy: try to parse from .project_info
+    info = project_root / ".project_info"
+    if info.exists():
+        try:
+            for line in info.read_text(encoding="utf-8", errors="replace").splitlines():
+                if line.lower().startswith("owner:"):
+                    return line.split(":", 1)[1].strip().lower()
+        except Exception:
+            return None
+    return None
+
+
+def _maybe_claim_legacy_project(project_root: Path, email: str) -> str | None:
+    """Claim legacy projects that predate ownership tracking."""
+    owner = _get_project_owner(project_root)
+    if owner:
+        return owner
+    if email.lower() != DEFAULT_EMAIL.lower():
+        return None
+    try:
+        (project_root / ".owner").write_text(email.lower(), encoding="utf-8")
+        info_path = project_root / ".project_info"
+        if info_path.exists():
+            info_text = info_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            if not any(line.lower().startswith("owner:") for line in info_text):
+                info_text.append(f"Owner: {email.lower()}")
+                info_path.write_text("\n".join(info_text) + "\n", encoding="utf-8")
+        return email.lower()
+    except Exception:
+        return None
+
+
+def _assert_project_owner(email: str) -> None:
+    if not workspace.project_root:
+        raise HTTPException(status_code=400, detail="Project not initialized.")
+    owner = _get_project_owner(workspace.project_root)
+    if owner and owner != email.lower():
+        raise HTTPException(status_code=403, detail="Forbidden.")
 
 
 def _run_transparency_for_dataset_sync(dataset_path: Path, output_path: Path) -> None:
@@ -394,24 +738,37 @@ async def websocket_endpoint(websocket: WebSocket):
 
             # ---- Initialize project from GUI ----
             if msg_type == "init_project":
-                output_path = (msg.get("output_path") or "").strip()
-                project_name = (msg.get("project_name") or "").strip()
-                if not output_path or not project_name:
+                try:
+                    email = _require_auth(msg)
+                except HTTPException:
                     await broadcast_to_gui({
                         "type": "team_message",
                         "from": "server",
                         "to": "team",
-                        "content": "Project init failed: output_path and project_name are required.",
+                        "content": "Project init failed: unauthorized.",
                         "tag": "ALERT",
                         "task_id": msg.get("task_id"),
                     })
                     continue
+
+                project_name = (msg.get("project_name") or "").strip()
+                if not project_name:
+                    project_name = f"{email.split('@')[0]}_chat_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
                 try:
-                    path = Path(output_path)
-                    if not path.exists():
-                        path.mkdir(parents=True, exist_ok=True)
-                    workspace.configure(output_path)
+                    _ensure_platform_root()
                     project_root = workspace.new_project(project_name)
+                    try:
+                        (project_root / ".owner").write_text(email.lower(), encoding="utf-8")
+                        info_path = project_root / ".project_info"
+                        if info_path.exists():
+                            info_text = info_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                            if not any(line.lower().startswith("owner:") for line in info_text):
+                                info_text.append(f"Owner: {email.lower()}")
+                                info_path.write_text("\n".join(info_text) + "\n", encoding="utf-8")
+                    except Exception:
+                        pass
+                    global _active_project_owner
+                    _active_project_owner = email.lower()
 
                     await broadcast_to_gui({
                         "type": "project_info",
@@ -463,6 +820,18 @@ async def websocket_endpoint(websocket: WebSocket):
 
             # ---- Phase 3 checks ----
             if msg_type == "phase3_check":
+                try:
+                    _require_auth(msg)
+                except HTTPException:
+                    await broadcast_to_gui({
+                        "type": "team_message",
+                        "from": "server",
+                        "to": "team",
+                        "content": "Phase 3 check failed: unauthorized.",
+                        "tag": "ALERT",
+                        "task_id": msg.get("task_id"),
+                    })
+                    continue
                 if not workspace.is_initialized or not workspace.project_root:
                     await broadcast_to_gui({
                         "type": "team_message",
@@ -478,6 +847,18 @@ async def websocket_endpoint(websocket: WebSocket):
 
             # ---- GitHub connect (store credentials/config only) ----
             if msg_type == "github_connect":
+                try:
+                    _require_auth(msg)
+                except HTTPException:
+                    await broadcast_to_gui({
+                        "type": "team_message",
+                        "from": "server",
+                        "to": "team",
+                        "content": "GitHub connect failed: unauthorized.",
+                        "tag": "ALERT",
+                        "task_id": msg.get("task_id"),
+                    })
+                    continue
                 if not workspace.is_initialized or not workspace.project_root:
                     await broadcast_to_gui({
                         "type": "team_message",
@@ -536,6 +917,18 @@ async def websocket_endpoint(websocket: WebSocket):
 
             # ── File write from frontend ───────────────────────────────────
             if msg_type == "file_write":
+                try:
+                    _require_auth(msg)
+                except HTTPException:
+                    await broadcast_to_gui({
+                        "type": "team_message",
+                        "from": "server",
+                        "to": "team",
+                        "content": "File write blocked: unauthorized.",
+                        "tag": "ALERT",
+                        "task_id": msg.get("task_id"),
+                    })
+                    continue
                 agent_id     = msg.get("agent_id", "shared")
                 filename     = msg.get("filename", "output.txt")
                 file_content = msg.get("content", "")
@@ -562,8 +955,13 @@ async def websocket_endpoint(websocket: WebSocket):
 
             # â”€â”€ Dataset upload from GUI (base64 over WebSocket) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             if msg_type == "dataset_upload":
-                if not workspace.is_initialized:
+                try:
+                    _require_auth(msg)
+                except HTTPException:
                     continue
+                if not workspace.is_initialized:
+                    _ensure_platform_root()
+                    workspace.new_project(f"chat_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}")
 
                 filename = _safe_dataset_name(msg.get("filename", "dataset.csv"))
                 payload_b64 = msg.get("content_b64", "")
@@ -598,6 +996,19 @@ async def websocket_endpoint(websocket: WebSocket):
             task_id = msg.get("task_id") or str(uuid.uuid4())[:8]
 
             if not content:
+                continue
+
+            try:
+                _require_auth(msg)
+            except HTTPException:
+                await broadcast_to_gui({
+                    "type": "team_message",
+                    "from": "server",
+                    "to": "team",
+                    "content": "Message blocked: unauthorized.",
+                    "tag": "ALERT",
+                    "task_id": task_id,
+                })
                 continue
 
             # Guard against accidental duplicate sends from multiple GUI WS connections.

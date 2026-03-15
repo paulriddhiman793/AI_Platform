@@ -119,24 +119,12 @@ def get_startup_config() -> tuple[str, str]:
     print("  AI Engineering Platform")
     print("=" * 60)
 
-    while True:
-        output_path = input(
-            "\nWhere should agents save project files?\n"
-            "Path (e.g. D:\\Downloads): "
-        ).strip()
-        if not output_path:
-            print("  Cannot be empty.")
-            continue
-        path = Path(output_path)
-        if not path.exists():
-            ans = input("  Path does not exist. Create it? (y/n): ").strip().lower()
-            if ans == "y":
-                path.mkdir(parents=True, exist_ok=True)
-                print(f"  Created: {path}")
-                break
-        else:
-            print(f"  Found: {path}")
-            break
+    # Platform-only storage (no user-supplied path)
+    output_path = (os.getenv("PLATFORM_STORAGE_ROOT") or "").strip()
+    if not output_path:
+        output_path = str(Path(__file__).resolve().parent.parent / "platform_projects")
+    Path(output_path).mkdir(parents=True, exist_ok=True)
+    print(f"\nStorage root: {output_path}")
 
     while True:
         project_name = input("\nProject name (e.g. 'fraud detection'): ").strip()
@@ -184,6 +172,12 @@ async def main() -> None:
         project_root = workspace.new_project(project_name)
         print(f"\nProject: {project_root}")
     else:
+        # Configure platform storage root for GUI-based projects
+        output_path = (os.getenv("PLATFORM_STORAGE_ROOT") or "").strip()
+        if not output_path:
+            output_path = str(Path(__file__).resolve().parent.parent / "platform_projects")
+        Path(output_path).mkdir(parents=True, exist_ok=True)
+        workspace.configure(output_path)
         print("\n[INIT] CLI init disabled. Waiting for GUI to initialize project.")
 
     # 3. Instantiate agents ONCE

@@ -56,6 +56,37 @@ class WorkspaceManager:
         print(f"[WORKSPACE] Project created: {self._project_root}")
         return self._project_root
 
+    def load_project(self, project_root: Path) -> Path:
+        if not self._output_path:
+            raise RuntimeError("Call workspace.configure(path) first.")
+        project_root = Path(project_root)
+        if not project_root.exists() or not project_root.is_dir():
+            raise FileNotFoundError(f"Project not found: {project_root}")
+        # Ensure project is within output_path
+        if self._output_path not in project_root.resolve().parents and project_root.resolve() != self._output_path.resolve():
+            raise ValueError("Project path is outside workspace output path.")
+
+        info = project_root / ".project_info"
+        if info.exists():
+            try:
+                for line in info.read_text(encoding="utf-8", errors="replace").splitlines():
+                    if line.lower().startswith("project:"):
+                        self._project_name = line.split(":", 1)[1].strip()
+                        break
+            except Exception:
+                self._project_name = project_root.name
+        else:
+            self._project_name = project_root.name
+
+        for subdir in ["ml_engineer", "data_scientist", "data_analyst",
+                       "github", "shared"]:
+            (project_root / subdir).mkdir(parents=True, exist_ok=True)
+
+        self._project_root = project_root
+        self._initialized = True
+        print(f"[WORKSPACE] Project loaded: {self._project_root}")
+        return self._project_root
+
     # ─── File Operations ─────────────────────────────────────────────────────
 
     def write(self, agent_id: str, filename: str, content: str,
