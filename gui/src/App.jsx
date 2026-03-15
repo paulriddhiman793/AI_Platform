@@ -2,8 +2,8 @@
 import { AGENTS, detectScenario, detectDirectResponse } from "./data/agents.js";
 
 // â”€â”€â”€ Config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-const WS_URL = "ws://localhost:8000/ws";
-const API_URL = "http://localhost:8000";
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const WS_URL = import.meta.env.VITE_WS_URL || `${API_URL.replace("http://", "ws://").replace("https://", "wss://")}/ws`;
 
 const safeLocalStorageGet = (key) => {
   try { return localStorage.getItem(key) || ""; } catch { return ""; }
