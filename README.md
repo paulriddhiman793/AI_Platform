@@ -1,107 +1,30 @@
 # AI Engineering Platform
 
-A multi-agent AI engineering workspace where specialized agents collaborate to build, deploy, and monitor ML-driven projects through a shared workspace and real-time GUI.
+A multi-agent ML workspace with a real-time web UI. Users upload datasets, run analysis and training, and download outputs from a platform-managed project folder.
 
-## What This Project Does
+## What This Platform Does
 
-This platform simulates and coordinates a real software/ML team:
+- Orchestrates Data Scientist, Data Analyst, and ML Engineer tasks through a single UI
+- Stores all outputs in a per-project folder under platform storage
+- Streams status, files, and reports to the UI in real time
+- Provides a built-in file browser with ZIP download
+- Supports GitHub push/merge via a dedicated GitHub agent
+- Enforces per-user project isolation
 
-- Orchestrates multiple agents for ML, data, and GitHub automation.
-- Writes all generated artifacts to a structured workspace on disk.
-- Streams agent messages, p2p interactions, and file writes to a live React GUI over WebSocket.
-- Supports both team-level task routing and direct/private agent instructions.
-- Automates repository sync to GitHub after task completion (main push, per-agent branches, merge to main).
+## Supported Data Types
 
-## Core Features
+- **Supported now:** tabular CSV datasets
+- **In progress:** CNN (image), NLP (text), and hybrid datasets
 
-- Multi-agent orchestration with task routing and result aggregation
-- Shared file workspace with per-agent folders
-- FastAPI + WebSocket backend for real-time status and messaging
-- React GUI with team chat, direct chats, group threads, and activity feed
-- Dataset upload from GUI (`.csv`) to `shared/datasets/`
-- Automatic transparency run on uploaded dataset (backend-triggered)
-- Transparency output persistence to `shared/output.txt`
-- Hybrid RAG indexing over transparency output:
-  - Dense retrieval via LanceDB
-  - Lexical retrieval via TF-IDF
-  - Hybrid scoring for better recall/precision
-- Data Scientist/Data Analyst report generation now uses hybrid-RAG context from full transparency output
-- Security pipeline: removed
-- Frontend generation: disabled
-- GitHub automation agent:
-  - Push full repo to `main`
-  - Push each agent folder to `agent/<name>` branch
-  - Merge all agent branches back into `main`
+## Quick Start (Local)
 
-## Agent Roster
-
-- `orchestrator`: Receives user intent, routes tasks, tracks completion
-- `ml_engineer`: Builds pipeline/API/deployment assets
-- `data_scientist`: EDA and feature recommendations
-- `data_analyst`: Metrics, monitoring, incident/reporting
-- `github`: Repository sync, branch push, merge workflow
-
-## Repository Structure
-
-```text
-agents/         Agent implementations
-api/            FastAPI server, startup, message bus
-tools/          Workspace manager and utilities
-gui/            React + Vite frontend
-test_api_key.py Standalone Groq API key test script
-```
-
-## Runtime Architecture
-
-1. `api/main.py` starts the platform.
-2. Workspace is configured and a project directory is created.
-3. Agents subscribe to message-bus channels.
-4. GUI connects via `ws://localhost:8000/ws`.
-5. User messages are routed to orchestrator or a direct agent.
-6. Optional: user uploads dataset from GUI (`dataset_upload` websocket event).
-7. Backend stores dataset in `shared/datasets/`, runs transparency pipeline, writes `shared/output.txt`, then builds LanceDB + lexical hybrid index under `shared/rag/`.
-8. Agents write files via `tools/workspace.py`.
-9. File events and statuses stream back to GUI in real time.
-
-## Prerequisites
-
-- Python 3.10+
-- Node.js 18+ and npm
-- Git installed and authenticated (for GitHub sync)
-- LanceDB Python package for vector indexing (`pip install lancedb`)
-
-## Environment Variables
-
-Create a `.env` in repo root (optional):
-
-```env
-GITHUB_REPO_URL=https://github.com/<owner>/<repo>.git
-GROQ_API_KEY=...
-GROQ_MODEL=llama-3.3-70b-versatile
-GROQ_MAX_TOKENS=1200
-GROQ_MAX_RETRIES=4
-GROQ_MIN_INTERVAL_SEC=1.2
-```
-
-Notes:
-- `GITHUB_REPO_URL` is optional if you use the GUI “Connect GitHub” flow.
-- If both are present, `GITHUB_REPO_URL` overrides GUI settings.
-- Groq settings are optional and only required for LLM-powered reporting.
-
-## Setup
-
-### Backend
+### 1) Backend
 
 ```bash
 python -m api.main
 ```
 
-Startup prompts (only if CLI init is enabled):
-- Output directory for generated projects
-- Project name
-- GitHub repo URL (if not valid in `.env`)
-
-### GUI
+### 2) Frontend
 
 ```bash
 cd gui
@@ -109,146 +32,95 @@ npm install
 npm run dev
 ```
 
-Open:
-- GUI: `http://localhost:5173`
-- Backend WS/API: `http://localhost:8000`
+Open `http://localhost:5173`
 
-## How to Use (Step-by-Step)
+## How It Works (User Flow)
 
-### What the Platform Currently Supports
+1. **Log in**
+2. **Create a new chat** (New Chat button)
+3. **Upload a CSV dataset**
+4. **Run analysis** by sending: `analyse data`
+5. **Train models** by sending: `train model`
+6. **View outputs** via **Access Files** (preview or download ZIP)
 
-- **Supported now:** Tabular datasets (CSV).
-- **In progress:** CNN (image), NLP (text), and hybrid datasets. These are not yet enabled in the workflow.
+### Example follow-up prompt
+After training, ask:
+```
+Show training process for XGB on engineered dataset
+```
 
-### Step-by-Step Workflow
+## Projects, Files, and History
 
-1. **Start the backend**  
-   Run `python -m api.main` to bring the agents online and start the WebSocket/API server.
+- Each �New Chat� creates a **new project folder** under the platform storage root.
+- Projects are **owned by the logged-in user**. You only see your own projects.
+- The **Projects list** in the sidebar lets you switch between previous projects.
+- **Access Files** opens an in-platform file browser and allows ZIP download.
 
-2. **Start the GUI**  
-   In another terminal:  
-   `cd gui` → `npm install` (first time only) → `npm run dev`
+## Dataset Caching
 
-3. **Log in**  
-   Use the login screen to authenticate. This creates a session for all actions.
+- If a dataset has already been feature-engineered, the Data Scientist reuses cached outputs.
+- Cache is keyed by dataset hash and stored under platform storage `.cache/engineered/`.
+- If cached suggestions are missing, FE is re-run and cache is refreshed.
 
-4. **Create a chat/project**  
-   Click **New Chat** to create a project workspace. Every run is stored in a platform-managed project folder.
+## GitHub Integration
 
-5. **Upload your dataset (CSV)**  
-   Use the **Upload** button. The dataset is stored inside the project under `shared/datasets/`.
+- Use **Connect GitHub** in the UI with a PAT and repo name.
+- The GitHub agent will push:
+  - `main`
+  - `agent/data_scientist`
+  - `agent/data_analyst`
+  - `agent/ml_engineer`
+  - `agent/shared`
 
-6. **Run analysis**  
-   Use Team chat and send **"analyse data"**.  
-   The Data Scientist + Data Analyst generate reports and graphs in the project workspace.
+If the remote repo already has commits, the agent merges remote history automatically before pushing.
 
-7. **Train models**  
-   After analysis completes, send **"train model"**.  
-   ML Engineer trains models on raw + engineered datasets and writes reports + metrics.
+## Environment Variables
 
-8. **Access outputs**  
-   Click **Access Files** to view all generated files inside the platform UI, or download a ZIP of the full project.
+Backend (`.env` at repo root):
 
-### Team Chat
+```
+FRONTEND_ORIGINS=https://your-frontend-domain
+PLATFORM_STORAGE_ROOT=./platform_projects
+MONGO_URI=mongodb://localhost:27017
+MONGO_DB=ai_platform
+GITHUB_REPO_URL=https://github.com/<owner>/<repo>.git   # optional fallback
+```
 
-Use Team chat for broad instructions like:
-- "build a churn model and deploy it"
-- "analyse data" (after uploading dataset)
+Frontend (Vercel or local `.env` in `gui/`):
 
-Orchestrator assigns agents and summarizes outcomes.
+```
+VITE_API_URL=https://your-public-backend-url
+VITE_WS_URL=wss://your-public-backend-url/ws
+```
 
-### Dataset Upload + RAG Flow
+## Deploying Frontend (Vercel) with Local Backend
 
-1. Use the GUI upload button to upload a `.csv` dataset.
-2. Backend silently:
-   - saves dataset to `shared/datasets/<file>.csv`
-   - runs transparency pipeline on that dataset
-   - writes full output to `shared/output.txt`
-   - builds hybrid RAG index in `shared/rag/` (LanceDB + TF-IDF)
-3. When Data Scientist / Data Analyst run analysis, they query this hybrid RAG context to write richer reports grounded in the full transparency output.
+You can host the frontend on Vercel while the backend runs on your machine. You must expose the backend publicly (Cloudflare Tunnel or ngrok).
 
-### Direct/Private Chat
+High-level steps:
 
-Message a specific agent directly for targeted work.
+1. Start a tunnel to your backend (example):
+   ```bash
+   cloudflared tunnel --url http://127.0.0.1:8000
+   ```
+2. Set Vercel env vars:
+   - `VITE_API_URL=<tunnel_url>`
+   - `VITE_WS_URL=<tunnel_url>/ws`
+3. Set backend CORS:
+   - `FRONTEND_ORIGINS=https://<your-vercel-app>.vercel.app`
 
-If backend is connected:
-- Direct messages go to real backend agents.
-- If multi-agent collaboration is required, a dedicated group thread is auto-created.
-- Future tasks re-use the same group thread for the same exact agent set.
+## Troubleshooting
 
-If backend is offline:
-- GUI falls back to local mock flows.
+- **CORS error on login**: verify `FRONTEND_ORIGINS` and restart backend.
+- **Tunnel can�t reach backend**: use `http://127.0.0.1:8000` in the tunnel URL (IPv4).
+- **Access Files shows Forbidden**: log out/in or select the correct project.
 
-## GitHub Automation Flow
+## Repository Structure
 
-After assigned agents finish, orchestrator triggers `github` agent to:
-
-1. Ensure git repo exists at project root.
-2. Commit and push full project to `main`.
-3. Create/push per-agent branches:
-   - `agent/ml_engineer`
-   - `agent/data_scientist`
-   - `agent/data_analyst`
-   - `agent/shared`
-4. Merge these branches into `main`.
-5. Push merged `main`.
-6. Write report: `github/sync_report.md` in workspace.
-
-## Common Issues
-
-- GUI connected but no real agent behavior:
-  - Ensure backend is running via `python -m api.main`.
-- GitHub sync fails:
-  - If using GUI connect, confirm the token has repo permissions.
-  - If using `.env`, check `GITHUB_REPO_URL` points to a valid repo.
-- Frontend on wrong port in mock mode:
-  - This occurs when backend is offline and GUI runs local mock responses.
-
-## Current Status
-
-This project is structured as a progressive platform with both real execution paths and mock-friendly UI behaviors. It is suitable for experimentation, demos, and incremental hardening into production-grade workflows.
-
-## Development Phases
-
-The platform is intentionally being built in phases. Each phase describes what is **implemented**, what is **optional**, and how it behaves at runtime.
-
-### Phase 1 — Core Orchestration (Current)
-
-Purpose: establish reliable multi-agent routing and file outputs.
-
-- Orchestrator routes tasks via keyword-based intent detection.
-- Agents coordinate and write artifacts into the workspace.
-- GUI receives real-time messages and file events over WebSocket.
-- GitHub automation can push and branch agent outputs.
-
-### Phase 2 — LLM-Driven Reasoning (Optional / Deferred)
-
-Purpose: enable model-driven decision making inside agents.
-
-- Agents can use LLMs for richer planning and reporting.
-- Tool-use patterns expand per agent role.
-- This phase is optional and can be disabled entirely.
-
-### Phase 3 — Execution Hardening (Implemented as "Check Agents")
-
-Purpose: validate environment and workflows before running expensive tasks.
-
-- A GUI "Check Agents" button runs Phase 3 checks in the project folder.
-- Writes Phase 3 reports to the project workspace.
-- Focuses on readiness and consistency rather than LLM intelligence.
-
-### Phase 4 — State & Reliability (Active)
-
-Purpose: track tasks, status, and durability across runs.
-
-- Every agent logs task start/complete/error to shared state.
-- State is persisted to `shared/state/` for inspection and reporting.
-- A Phase 4 report can be generated from state logs.
-
-### Phase 5 — Production Hardening (Planned)
-
-Purpose: move from prototype workflow to production-grade reliability.
-
-- Stronger observability and structured logging.
-- Robust CI/CD integration and deployment checks.
-- Policy/permission controls and scalability tuning.
+```
+agents/         Agent implementations
+api/            FastAPI server + WebSocket
+tools/          Workspace, RAG, utilities
+gui/            React + Vite frontend
+platform_projects/  Runtime project storage (ignored by git)
+```
