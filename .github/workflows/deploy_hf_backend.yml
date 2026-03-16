@@ -1,0 +1,48 @@
+name: Deploy Backend to Hugging Face
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: deploy/hf_space/requirements.txt
+
+      - name: Prepare HF workspace
+        run: |
+          mkdir -p hf_space_repo
+          git clone https://huggingface.co/spaces/rppooo/ai_platform hf_space_repo
+          rsync -a --delete \
+            --exclude ".git" \
+            --exclude "platform_projects" \
+            --exclude "shared" \
+            --exclude "gui/node_modules" \
+            --exclude "gui/dist" \
+            --exclude ".agent_tmp" \
+            ./ hf_space_repo/
+
+      - name: Ensure HF Dockerfiles
+        run: |
+          rsync -a deploy/hf_space/ hf_space_repo/
+
+      - name: Commit and push
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          cd hf_space_repo
+          git config user.email "ci@github-actions"
+          git config user.name "github-actions"
+          git add -A
+          git commit -m "deploy: update backend" || echo "No changes to commit"
+          git remote set-url origin https://user:${HF_TOKEN}@huggingface.co/spaces/rppooo/ai_platform
+          git push origin main

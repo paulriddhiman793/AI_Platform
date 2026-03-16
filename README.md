@@ -131,6 +131,29 @@ Housing Price Prediction
 
 If the remote repo already has commits, the agent merges remote history automatically before pushing.
 
+## CI/CD Pipeline (GitHub Actions)
+
+This repo includes two workflows:
+
+1) CI (.github/workflows/ci.yml)
+   - Installs backend dependencies and runs a Python syntax check.
+   - Installs frontend dependencies and runs a Vite build.
+
+2) Deploy Backend to Hugging Face (.github/workflows/deploy_hf_backend.yml)
+   - Pushes the backend into your HF Space: rppooo/ai_platform
+   - Uses a Docker Space based on deploy/hf_space/Dockerfile
+
+### Required Secrets
+
+Set this in GitHub ? Repo ? Settings ? Secrets and variables ? Actions:
+
+- HF_TOKEN: a Hugging Face token with write access to the space.
+
+### Notes
+
+- The frontend remains on Vercel. Only the backend is deployed to HF Spaces.
+- HF Space expects the backend to listen on port 7860 (handled via PORT env).
+
 ## Environment Variables
 
 Backend (.env at repo root):

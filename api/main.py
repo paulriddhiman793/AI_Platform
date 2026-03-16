@@ -198,10 +198,11 @@ async def main() -> None:
         await publish_status(agent.AGENT_ID, "idle")
 
     # 5. Start uvicorn in the background
+    port = int(os.getenv("PORT", "8000"))
     config = uvicorn.Config(
         app=app,
         host="0.0.0.0",
-        port=8000,
+        port=port,
         log_level="warning",
         # disable reload - reload spawns a second process
         reload=False,
