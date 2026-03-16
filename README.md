@@ -1,4 +1,13 @@
-﻿# AI Engineering Platform
+﻿---
+title: AI Platform
+emoji: "🤖"
+colorFrom: "gray"
+colorTo: "blue"
+sdk: "docker"
+app_file: Dockerfile
+pinned: false
+---
+# AI Engineering Platform
 
 A multi-agent ML workspace with a real-time web UI. Users upload datasets, run analysis and training, and download outputs from a platform-managed project folder.
 
@@ -204,4 +213,5 @@ tools/          Workspace, RAG, utilities
 gui/            React + Vite frontend
 platform_projects/  Runtime project storage (ignored by git)
 ```
+
 
