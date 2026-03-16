@@ -26,6 +26,7 @@ jobs:
           git clone https://huggingface.co/spaces/rppooo/ai_platform hf_space_repo
           rsync -a --delete \
             --exclude ".git" \
+            --exclude "hf_space_repo" \
             --exclude "platform_projects" \
             --exclude "shared" \
             --exclude "gui/node_modules" \
