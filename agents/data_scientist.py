@@ -62,6 +62,20 @@ print("ENGINEERED_BASE:", os.path.splitext(os.path.basename(r"{ds}"))[0])
             "base": base,
         }
 
+    def _find_suggestions_file(self, base: str, dataset_dir: Path) -> Path | None:
+        candidates: list[Path] = []
+        for root in [dataset_dir, self._repo_root(), workspace.project_root or self._repo_root()]:
+            try:
+                candidates.extend(list(Path(root).glob(f"{base}*feature_suggestions*.md")))
+                candidates.extend(list(Path(root).glob("*feature_suggestions*.md")))
+            except Exception:
+                continue
+        candidates = [p for p in candidates if p.exists()]
+        if not candidates:
+            return None
+        candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        return candidates[0]
+
     def _cache_root(self) -> Path:
         if workspace.output_path:
             return workspace.output_path / ".cache" / "engineered"
@@ -187,6 +201,17 @@ print("ENGINEERED_BASE:", os.path.splitext(os.path.basename(r"{ds}"))[0])
                         cached_md.read_text(encoding="utf-8", errors="replace"),
                         task_id,
                     )
+                else:
+                    workspace.write(
+                        "data_scientist",
+                        f"{ds_path.stem}_feature_suggestions.md",
+                        (
+                            "# Feature Suggestions\n\n"
+                            "Cached engineered dataset reused.\n"
+                            "No cached feature suggestions file was found for this dataset.\n"
+                        ),
+                        task_id,
+                    )
                 await self.report(
                     "Data Scientist reused cached engineered dataset.\n"
                     f"Saved: shared/datasets/{ds_path.stem}_engineered.csv",
@@ -227,11 +252,12 @@ print("ENGINEERED_BASE:", os.path.splitext(os.path.basename(r"{ds}"))[0])
                     engineered_bytes,
                     task_id,
                 )
-            if workspace.is_initialized and suggestions_src.exists():
+            suggestions_file = suggestions_src if suggestions_src.exists() else self._find_suggestions_file(base, ds_path.parent)
+            if workspace.is_initialized and suggestions_file and suggestions_file.exists():
                 workspace.write(
                     "data_scientist",
                     f"{base}_feature_suggestions.md",
-                    suggestions_src.read_text(encoding="utf-8", errors="replace"),
+                    suggestions_file.read_text(encoding="utf-8", errors="replace"),
                     task_id,
                 )
             if workspace.is_initialized and feature_py_src.exists():
@@ -247,9 +273,9 @@ print("ENGINEERED_BASE:", os.path.splitext(os.path.basename(r"{ds}"))[0])
                         feature_py_src.read_text(encoding="utf-8", errors="replace"),
                         encoding="utf-8",
                     )
-                if suggestions_src.exists():
+                if suggestions_file and suggestions_file.exists():
                     (cache_dir / "feature_suggestions.md").write_text(
-                        suggestions_src.read_text(encoding="utf-8", errors="replace"),
+                        suggestions_file.read_text(encoding="utf-8", errors="replace"),
                         encoding="utf-8",
                     )
             except Exception:
