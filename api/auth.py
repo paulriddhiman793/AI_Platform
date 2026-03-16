@@ -10,6 +10,10 @@ from typing import Optional
 
 from pymongo import MongoClient
 from pymongo.collection import Collection
+try:
+    import certifi  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    certifi = None
 
 
 DEFAULT_EMAIL = "mada69@gmail.com"
@@ -18,7 +22,13 @@ DEFAULT_PASSWORD = "qwerty"
 
 def _mongo_client() -> MongoClient:
     uri = (os.getenv("MONGO_URI") or "mongodb://localhost:27017").strip()
-    return MongoClient(uri)
+    kwargs = {}
+    if uri.startswith("mongodb+srv://") or "tls=true" in uri or "ssl=true" in uri:
+        if certifi:
+            kwargs["tlsCAFile"] = certifi.where()
+        if "tls=" not in uri and "ssl=" not in uri:
+            kwargs["tls"] = True
+    return MongoClient(uri, **kwargs)
 
 
 def _users_collection() -> Collection:
