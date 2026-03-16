@@ -11,8 +11,6 @@ jobs:
   deploy:
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
-    env:
-      HF_TOKEN: ${{ secrets.HF_TOKEN || secrets.HUGGINGFACE_API_KEY }}
     steps:
       - uses: actions/checkout@v4
 
@@ -40,12 +38,17 @@ jobs:
         run: |
           rsync -a deploy/hf_space/ hf_space_repo/
 
-      - name: Verify HF token
+      - name: Resolve HF token
         run: |
-          if [ -z "$HF_TOKEN" ]; then
+          if [ -n "${{ secrets.HF_TOKEN }}" ]; then
+            echo "HF_TOKEN=${{ secrets.HF_TOKEN }}" >> $GITHUB_ENV
+          elif [ -n "${{ secrets.HUGGINGFACE_API_KEY }}" ]; then
+            echo "HF_TOKEN=${{ secrets.HUGGINGFACE_API_KEY }}" >> $GITHUB_ENV
+          else
             echo "HF_TOKEN is missing. Add repo secret HF_TOKEN (or HUGGINGFACE_API_KEY) with write access to the space."
             exit 1
           fi
+          echo "HF_TOKEN length: ${#HF_TOKEN}"
 
       - name: Commit and push
         run: |
