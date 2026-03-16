@@ -11,10 +11,45 @@ A multi-agent ML workspace with a real-time web UI. Users upload datasets, run a
 - Supports GitHub push/merge via a dedicated GitHub agent
 - Enforces per-user project isolation
 
+## Architecture Diagram
+
+```
+                 +-----------------------------+
+                 |         Frontend UI         |
+                 |  React + Vite (Vercel/Local)|
+                 +--------------+--------------+
+                                | WebSocket + HTTP
+                                v
+                     +-----------------------+
+                     |     FastAPI Backend   |
+                     |  Auth + WS + REST     |
+                     +-----------+-----------+
+                                 | message bus
+                                 v
+        +---------------+----------------+----------------+
+        | Data Scientist| Data Analyst   | ML Engineer    |
+        +---------------+----------------+----------------+
+                                 |
+                                 v
+                     +-----------------------+
+                     |   Platform Projects   |
+                     | (files, reports, ZIP) |
+                     +-----------------------+
+```
+
+## Tech Stack
+
+- Frontend: React, Vite
+- Backend: FastAPI, WebSocket
+- Storage: Local project folders under platform_projects/
+- Auth: MongoDB (pymongo)
+- ML/DS: Python, pandas, scikit-learn
+- GitHub: REST API + git CLI
+
 ## Supported Data Types
 
-- **Supported now:** tabular CSV datasets
-- **In progress:** CNN (image), NLP (text), and hybrid datasets
+- Supported now: tabular CSV datasets
+- In progress: CNN (image), NLP (text), and hybrid datasets
 
 ## Quick Start (Local)
 
@@ -32,16 +67,16 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:5173`
+Open http://localhost:5173
 
 ## How It Works (User Flow)
 
-1. **Log in**
-2. **Create a new chat** (New Chat button)
-3. **Upload a CSV dataset**
-4. **Run analysis** by sending: `analyse data`
-5. **Train models** by sending: `train model`
-6. **View outputs** via **Access Files** (preview or download ZIP)
+1. Log in
+2. Create a new chat (New Chat button)
+3. Upload a CSV dataset
+4. Run analysis by sending: analyse data
+5. Train models by sending: train model
+6. View outputs via Access Files (preview or download ZIP)
 
 ### Example follow-up prompt
 After training, ask:
@@ -49,34 +84,56 @@ After training, ask:
 Show training process for XGB on engineered dataset
 ```
 
+## Example Workflow
+
+1. Upload Housing.csv
+2. Send analyse data
+3. Data Scientist generates engineered dataset + suggestions
+4. Data Analyst produces EDA reports + graphs
+5. Send train model
+6. ML Engineer trains on raw + engineered datasets
+7. Compare metrics and download ZIP from Access Files
+
+## Example Use Case
+
+Housing Price Prediction
+
+- Input: Housing.csv (tabular)
+- Output:
+  - EDA findings and graphs
+  - Engineered features CSV
+  - Model comparison report
+  - Best-model summary
+  - Downloadable ZIP with all artifacts
+
 ## Projects, Files, and History
 
-- Each “New Chat” creates a **new project folder** under the platform storage root.
-- Projects are **owned by the logged-in user**. You only see your own projects.
-- The **Projects list** in the sidebar lets you switch between previous projects.
-- **Access Files** opens an in-platform file browser and allows ZIP download.
+- Each New Chat creates a new project folder under the platform storage root.
+- Projects are owned by the logged-in user. You only see your own projects.
+- The Projects list in the sidebar lets you switch between previous projects.
+- Access Files opens an in-platform file browser and allows ZIP download.
 
 ## Dataset Caching
 
 - If a dataset has already been feature-engineered, the Data Scientist reuses cached outputs.
-- Cache is keyed by dataset hash and stored under platform storage `.cache/engineered/`.
+- Cache is keyed by dataset hash and stored under platform storage .cache/engineered/.
 - If cached suggestions are missing, FE is re-run and cache is refreshed.
 
 ## GitHub Integration
 
-- Use **Connect GitHub** in the UI with a PAT and repo name.
+- Use Connect GitHub in the UI with a PAT and repo name.
 - The GitHub agent will push:
-  - `main`
-  - `agent/data_scientist`
-  - `agent/data_analyst`
-  - `agent/ml_engineer`
-  - `agent/shared`
+  - main
+  - agent/data_scientist
+  - agent/data_analyst
+  - agent/ml_engineer
+  - agent/shared
 
 If the remote repo already has commits, the agent merges remote history automatically before pushing.
 
 ## Environment Variables
 
-Backend (`.env` at repo root):
+Backend (.env at repo root):
 
 ```
 FRONTEND_ORIGINS=https://your-frontend-domain
@@ -86,7 +143,7 @@ MONGO_DB=ai_platform
 GITHUB_REPO_URL=https://github.com/<owner>/<repo>.git   # optional fallback
 ```
 
-Frontend (Vercel or local `.env` in `gui/`):
+Frontend (Vercel or local .env in gui/):
 
 ```
 VITE_API_URL=https://your-public-backend-url
@@ -104,16 +161,16 @@ High-level steps:
    cloudflared tunnel --url http://127.0.0.1:8000
    ```
 2. Set Vercel env vars:
-   - `VITE_API_URL=<tunnel_url>`
-   - `VITE_WS_URL=<tunnel_url>/ws`
+   - VITE_API_URL=<tunnel_url>
+   - VITE_WS_URL=<tunnel_url>/ws
 3. Set backend CORS:
-   - `FRONTEND_ORIGINS=https://<your-vercel-app>.vercel.app`
+   - FRONTEND_ORIGINS=https://<your-vercel-app>.vercel.app
 
 ## Troubleshooting
 
-- **CORS error on login**: verify `FRONTEND_ORIGINS` and restart backend.
-- **Tunnel can’t reach backend**: use `http://127.0.0.1:8000` in the tunnel URL (IPv4).
-- **Access Files shows Forbidden**: log out/in or select the correct project.
+- CORS error on login: verify FRONTEND_ORIGINS and restart backend.
+- Tunnel can’t reach backend: use http://127.0.0.1:8000 in the tunnel URL (IPv4).
+- Access Files shows Forbidden: log out/in or select the correct project.
 
 ## Repository Structure
 
