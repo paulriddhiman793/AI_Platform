@@ -1,136 +1,151 @@
 # Feature Engineering Suggestions
-Dataset: `D:\\Downloads\\Agents\\AI_Platform\\platform_projects\\chat_20260315t202954_20260316_015954\\shared\\datasets\\Housing.csv`
+Dataset: `D:\\Downloads\\Agents\\AI_Platform\\platform_projects\\chat_20260316t004703_20260316_061703\\shared\\datasets\\Housing.csv`
 
-**⚠️ Data‑quality quick‑scan**  
-- No missing values – good baseline, but double‑check that the string columns are consistently lower‑cased / stripped (e.g., “yes ” vs “yes”).  
-- Highly imbalanced binary flags: *hotwaterheating* (≈95 % “no”), *guestroom* (≈82 % “no”). May need to treat them as “rare‑feature” indicators or combine them into an “amenities‑score”.  
-- *furnishingstatus* has three levels with fairly even split – consider ordered encoding (unfurnished < semi‑furnished < furnished).  
-- *area* is numeric with a wide range; consider scaling/normalising before modelling.  
+**Data‑quality flags**
 
----
-
-## 📅 Datetime Features  
-*(none present – if you later obtain a “year_built” or “sale_date”, add age, month‑season, days‑on‑market, etc.)*  
+- All columns are non‑missing, which is great, but several categorical columns have very imbalanced levels (`hotwaterheating` “yes” only 25 / 545 rows, `airconditioning` “yes” 172 / 545).  
+- `price` and `area` are on very different scales (millions vs thousands); consider log‑transforming the target (and possibly `area`) before modelling.  
+- `stories`, `bedrooms`, `bathrooms`, and `parking` are integer counts – check that no impossible combinations exist (e.g., 0 stories, 4 bedrooms).  
+- `furnishingstatus` has three levels; verify spelling/casing consistency (e.g., “semi‑furnished” vs “semi‑furn”).  
 
 ---
 
-## 🔗 Interaction Features  
+### 📅 Datetime Features  
+*(None present in the raw data, but you can create proxy “age” features if you have a build‑year column elsewhere.)*  
 
-- **total_rooms**  
-  - *Why*: Combines bedroom and bathroom count; captures overall size beyond just area.  
-  - *Needed columns*: `bedrooms`, `bathrooms`  
-  - *Impact*: **High**  
-
-- **area_per_bedroom**  
-  - *Why*: Normalises space per sleeping unit – a strong driver of price per square‑foot.  
-  - *Needed columns*: `area`, `bedrooms`  
-  - *Impact*: **High**  
-
-- **area_per_bathroom**  
-  - *Why*: Similar to above, but for bathroom convenience; often correlated with luxury.  
-  - *Needed columns*: `area`, `bathrooms`  
-  - *Impact*: **Medium**  
-
-- **bedrooms_x_bathrooms** (product)  
-  - *Why*: Captures synergy between sleeping and bathing facilities; non‑linear effect on price.  
-  - *Needed columns*: `bedrooms`, `bathrooms`  
-  - *Impact*: **Medium**  
-
-- **stories_x_parking**  
-  - *Why*: Multi‑story homes with limited parking may be less attractive; interaction reveals trade‑off.  
-  - *Needed columns*: `stories`, `parking`  
-  - *Impact*: **Low‑Medium**  
-
-- **mainroad_x_prefarea** (both binary)  
-  - *Why*: A house on a main road *and* in a preferred area may command a premium; the opposite may penalise.  
-  - *Needed columns*: `mainroad`, `prefarea`  
-  - *Impact*: **Medium**  
+- **`age_category`** – bucket the property age (if you can derive it from a “year_built” field) into “new”, “mid‑age”, “old”.  
+  - *Why*: Newer homes often command a premium; age interacts with renovation cost.  
+  - *Needed*: `year_built` (not in current set).  
+  - *Impact*: **Medium** (depends on availability).
 
 ---
 
-## 📊 Aggregation Features  
+### 🤝 Interaction Features  
 
-- **amenities_count**  
-  - *Why*: Simple count of “yes” flags (`mainroad`, `guestroom`, `basement`, `hotwaterheating`, `airconditioning`, `prefarea`). More amenities → higher price.  
-  - *Needed columns*: all binary string columns listed above.  
-  - *Impact*: **High**  
+- **`bed_bath_ratio`** – `bedrooms / bathrooms`.  
+  - *Why*: A high bedroom‑to‑bathroom ratio can signal under‑serviced units, often lowering price per sqm.  
+  - *Needed*: `bedrooms`, `bathrooms`.  
+  - *Impact*: **Medium**.  
 
-- **luxury_score**  
-  - *Why*: Weighted sum of high‑value amenities (e.g., `mainroad`, `airconditioning`, `basement`, `furnishingstatus`). Gives a single proxy for overall “luxury”.  
-  - *Needed columns*: `mainroad`, `airconditioning`, `basement`, `furnishingstatus` (map to numeric weights).  
-  - *Impact*: **Medium‑High**  
+- **`area_per_bedroom`** – `area / bedrooms`.  
+  - *Why*: Captures space per sleeping room; larger per‑bedroom area usually drives up price.  
+  - *Needed*: `area`, `bedrooms`.  
+  - *Impact*: **High** (area already highly correlated).  
 
-- **room_density**  
-  - *Why*: Ratio of total rooms to area (`total_rooms / area`). Captures how “compact” the layout is, which can affect perceived value.  
-  - *Needed columns*: `area`, `bedrooms`, `bathrooms` (or `total_rooms`).  
-  - *Impact*: **Medium**  
+- **`area_per_bathroom`** – `area / bathrooms`.  
+  - *Why*: Similar rationale; bathrooms are costlier to add than bedrooms.  
+  - *Needed*: `area`, `bathrooms`.  
+  - *Impact*: **Medium**.  
 
----
+- **`total_rooms`** – `bedrooms + bathrooms + stories`.  
+  - *Why*: Overall “room count” can capture total livable volume better than any single count.  
+  - *Needed*: `bedrooms`, `bathrooms`, `stories`.  
+  - *Impact*: **Medium**.  
 
-## 🔠 Encoding Features  
+- **`road_parking_combo`** – binary flag `mainroad == 'yes' and parking > 0`.  
+  - *Why*: Properties on a main road with parking are especially attractive in congested areas.  
+  - *Needed*: `mainroad`, `parking`.  
+  - *Impact*: **Low‑Medium**.  
 
-- **binary_one_hot** for each of the six yes/no columns (`mainroad`, `guestroom`, `basement`, `hotwaterheating`, `airconditioning`, `prefarea`).  
-  - *Why*: Tree‑based models handle 0/1 fine; linear models need explicit numeric encoding.  
-  - *Impact*: **High** (ensures no hidden ordinal assumption).  
-
-- **ordinal_encoding_furnishing**  
-  - Map `unfurnished → 0`, `semi-furnished → 1`, `furnished → 2`.  
-  - *Why*: Reflects a natural ordering of finish quality.  
-  - *Impact*: **Medium**  
-
-- **target_mean_encoding_categorical** (for low‑cardinality flags)  
-  - *Why*: Captures subtle price differences beyond simple yes/no, especially for `prefarea` and `mainroad`.  
-  - *Impact*: **Medium**  
+- **`prefarea_furnish_combo`** – `prefarea == 'yes' and furnishingstatus == 'furnished'`.  
+  - *Why*: Preferred locations with ready‑to‑move‑in furnishing often fetch a premium.  
+  - *Needed*: `prefarea`, `furnishingstatus`.  
+  - *Impact*: **Low‑Medium**.
 
 ---
 
-## ⚖️ Ratio / Normalisation Features  
+### 📊 Aggregation Features  
 
-- **price_per_area (target leakage flag – for EDA only)**  
-  - *Why*: Helps spot outliers; not for model input but useful for data cleaning.  
-  - *Impact*: **Low** (diagnostic).  
+- **`area_per_story`** – `area / stories`.  
+  - *Why*: Normalises total footprint by vertical density; a larger footprint per floor can imply larger plots.  
+  - *Needed*: `area`, `stories`.  
+  - *Impact*: **Medium**.  
 
-- **area_scaled_log**  
-  - *Why*: `area` is right‑skewed; log‑transform stabilises variance and improves linearity with price.  
-  - *Needed columns*: `area`  
-  - *Impact*: **Medium**  
+- **`parking_per_story`** – `parking / stories`.  
+  - *Why*: In multi‑story buildings, parking per floor is a proxy for amenity richness.  
+  - *Needed*: `parking`, `stories`.  
+  - *Impact*: **Low‑Medium**.  
 
-- **parking_ratio** = `parking / stories`  
-  - *Why*: Parking per floor may indicate garage presence vs street parking.  
-  - *Needed columns*: `parking`, `stories`  
-  - *Impact*: **Low‑Medium**  
-
----
-
-## 🏡 Domain‑Specific Features  
-
-- **has_garage** (derived from `parking >= 1`)  
-  - *Why*: Binary indicator of at least one parking spot – often a decisive factor for buyers.  
-  - *Needed columns*: `parking`  
-  - *Impact*: **High**  
-
-- **is_multi_story** (`stories > 1`)  
-  - *Why*: Multi‑story homes can have higher land‑value per square foot; may affect price differently than single‑story.  
-  - *Needed columns*: `stories`  
-  - *Impact*: **Medium**  
-
-- **is_spacious** (`area > area.quantile(0.75)`)  
-  - *Why*: Flagging top‑quartile homes captures “luxury‑size” segment that may behave differently.  
-  - *Needed columns*: `area`  
-  - *Impact*: **Medium**  
-
-- **has_full_basement** (`basement == "yes"`) *and* `stories == 1`  
-  - *Why*: A full basement in a single‑story house is especially valuable (extra usable space).  
-  - *Needed columns*: `basement`, `stories`  
-  - *Impact*: **Low‑Medium**  
+- **`total_amenities`** – sum of binary flags (`mainroad`, `guestroom`, `basement`, `hotwaterheating`, `airconditioning`, `prefarea`). Convert “yes” = 1, “no” = 0.  
+  - *Why*: Captures overall “feature richness” of a unit; more amenities → higher price.  
+  - *Needed*: All listed categorical columns.  
+  - *Impact*: **High** (aggregates many modestly predictive signals).  
 
 ---
 
-### Quick implementation checklist
-1. **Clean string columns** – lower‑case, strip whitespace, map “yes”/“no” to 1/0.  
-2. **Create the interaction & aggregation columns** listed above.  
-3. **Log‑transform `area`** (and optionally `price` for modelling).  
-4. **One‑hot / ordinal encode** the categorical variables.  
-5. **Scale numeric features** (standard scaler or MinMax) for algorithms sensitive to magnitude.  
+### 🔤 Encoding Features  
 
-These engineered features should give the model richer signals about size efficiency, amenity richness, and house configuration, leading to a noticeable lift in predictive performance. 🚀
+- **`mainroad_int`**, **`guestroom_int`**, **`basement_int`**, **`hotwaterheating_int`**, **`airconditioning_int`**, **`prefarea_int`** – map “yes”→1, “no”→0.  
+  - *Why*: Many models (linear, tree‑based) benefit from numeric representation; also enables interaction terms.  
+  - *Needed*: Corresponding string columns.  
+  - *Impact*: **Medium** (baseline encoding).  
+
+- **`furnish_onehot`** – one‑hot encode `furnishingstatus` (3 binary columns).  
+  - *Why*: Allows the model to learn separate effects for each furnishing level.  
+  - *Needed*: `furnishingstatus`.  
+  - *Impact*: **Medium**.  
+
+- **`high_amenity_score`** – treat `total_amenities` (see above) as ordinal and optionally bucket (0‑2 low, 3‑4 medium, 5‑6 high).  
+  - *Why*: Captures non‑linear jumps in price when many amenities are present.  
+  - *Needed*: `total_amenities`.  
+  - *Impact*: **Medium**.  
+
+---
+
+### ⚖️ Ratio / Normalisation Features  
+
+- **`log_price`** – natural log of `price`.  
+  - *Why*: Prices are right‑skewed; log transformation stabilises variance and improves linear model fit.  
+  - *Needed*: `price`.  
+  - *Impact*: **High** (target transformation).  
+
+- **`log_area`** – natural log of `area`.  
+  - *Why*: Area also right‑skewed; log‑area aligns scale with log‑price, enabling linear relationships.  
+  - *Needed*: `area`.  
+  - *Impact*: **High**.  
+
+- **`price_per_sqm`** – `price / area`.  
+  - *Why*: Direct per‑square‑meter price is a classic real‑estate metric; may expose outliers or neighbourhood effects.  
+  - *Needed*: `price`, `area`.  
+  - *Impact*: **Medium** (useful for diagnostics, sometimes as a target for secondary models).  
+
+- **`parking_ratio`** – `parking / (bedrooms + 1)`.  
+  - *Why*: Normalises parking availability by household size; excess parking beyond needed may have diminishing returns.  
+  - *Needed*: `parking`, `bedrooms`.  
+  - *Impact*: **Low‑Medium**.  
+
+---
+
+### 🏗️ Domain‑Specific Features  
+
+- **`has_basement_and_guestroom`** – binary flag = 1 if both `basement` and `guestroom` are “yes”.  
+  - *Why*: The combination often indicates a larger, more premium property (extra living/parking space).  
+  - *Needed*: `basement`, `guestroom`.  
+  - *Impact*: **Low‑Medium**.  
+
+- **`luxury_indicator`** – flag = 1 when `area > 9000` **and** `furnishingstatus == 'furnished'` **and** `mainroad == 'yes'`.  
+  - *Why*: Captures high‑end segment that likely commands a price premium beyond what each variable explains alone.  
+  - *Needed*: `area`, `furnishingstatus`, `mainroad`.  
+  - *Impact*: **Medium**.  
+
+- **`story_density`** – `stories / area`.  
+  - *Why*: Higher story count relative to footprint can signal high‑rise, possibly lower land value per sqm but higher construction cost; useful in distinguishing house‑type vs apartment‑type properties.  
+  - *Needed*: `stories`, `area`.  
+  - *Impact*: **Low‑Medium**.  
+
+- **`amenity_score_weighted`** – weighted sum of amenity flags where high‑impact amenities (e.g., `airconditioning`, `hotwaterheating`) receive larger weights (derived from correlation strength).  
+  - *Why*: Not all amenities affect price equally; weighting reflects their predictive power.  
+  - *Needed*: All binary amenity columns.  
+  - *Impact*: **Medium**.  
+
+---
+
+**How to proceed**
+
+1. **Encode** all “yes/no” strings to 0/1 first.  
+2. **Create** the aggregated `total_amenities` and its bucketed version.  
+3. **Engineer** the ratio & interaction features (especially `area_per_bedroom`, `bed_bath_ratio`).  
+4. **Log‑transform** `price` and `area` for linear models; keep original for tree‑based models.  
+5. **Run** a quick feature‑importance check (e.g., LightGBM or RandomForest) to validate the impact ratings and prune low‑impact engineered columns.  
+
+These additions should capture non‑linear relationships, interaction effects, and domain knowledge that the raw numeric/categorical set alone may miss, leading to a more accurate price‑prediction model.

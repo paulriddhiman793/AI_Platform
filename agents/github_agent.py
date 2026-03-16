@@ -70,11 +70,12 @@ class GitHubAgent(BaseAgent):
             return
 
         cfg = self._load_github_config(root)
-        remote_url = (cfg.get("repo_url") or "").strip()
-        if not remote_url:
+        has_gui_cfg = bool((cfg.get("repo") or cfg.get("repo_url")))
+        remote_url = (cfg.get("repo_url") or "").strip() if has_gui_cfg else ""
+        if not remote_url and not has_gui_cfg:
             remote_url = (os.getenv("GITHUB_REPO_URL") or "").strip()
 
-        if not remote_url and not await self._has_remote(root):
+        if (not remote_url) and not await self._has_remote(root):
             created, err = await self._create_repo_if_needed(cfg)
             if not created:
                 await self.report(
@@ -172,6 +173,15 @@ class GitHubAgent(BaseAgent):
             await self._run_git(root, ["checkout", "-B", "main"])
         return True, "Repository ready."
 
+    async def _prepare_remote_main(self, root: Path, cfg: dict | None = None) -> tuple[bool, str]:
+        ok, out = await self._run_git(root, ["fetch", "origin", "main"], cfg)
+        if not ok:
+            return False, out
+        ok, out = await self._run_git(root, ["merge", "--allow-unrelated-histories", "origin/main"], cfg)
+        if not ok:
+            return False, out
+        return True, "Remote main merged."
+
     async def _has_remote(self, root: Path) -> bool:
         ok, out = await self._run_git(root, ["remote"])
         if not ok:
@@ -210,18 +220,21 @@ class GitHubAgent(BaseAgent):
             err = (out or "").lower()
             if any(k in err for k in ["fetch first", "non-fast-forward", "rejected"]):
                 # Try to merge remote history and push again
-                await self._run_git(root, ["fetch", "origin", branch], cfg)
-                okm, outm = await self._run_git(
-                    root,
-                    ["merge", "--allow-unrelated-histories", f"origin/{branch}"],
-                    cfg,
-                )
+                if branch == "main":
+                    okm, outm = await self._prepare_remote_main(root, cfg)
+                else:
+                    await self._run_git(root, ["fetch", "origin", branch], cfg)
+                    okm, outm = await self._run_git(
+                        root,
+                        ["merge", "--allow-unrelated-histories", f"origin/{branch}"],
+                        cfg,
+                    )
                 if okm:
                     ok2, out2 = await self._run_git(root, ["push", "-u", "origin", branch], cfg)
                     if ok2:
                         return True, out2
                     return False, f"Push failed for {branch}: {out2}"
-                return False, f"Push failed for {branch}: {out}"
+                return False, f"Push failed for {branch}: {outm or out}"
             return False, f"Push failed for {branch}: {out}"
         return True, out
 

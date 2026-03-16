@@ -187,31 +187,21 @@ print("ENGINEERED_BASE:", os.path.splitext(os.path.basename(r"{ds}"))[0])
             cached_csv = cache_dir / "engineered.csv"
             cached_py = cache_dir / "feature_engineering.py"
             cached_md = cache_dir / "feature_suggestions.md"
-            if cached_csv.exists() and workspace.is_initialized:
+            # Reuse cache only when BOTH engineered CSV and suggestions exist.
+            # If suggestions are missing, re-run FE to regenerate and refresh cache.
+            if cached_csv.exists() and cached_md.exists() and workspace.is_initialized:
                 engineered_dst = workspace.write_bytes(
                     "shared",
                     f"datasets/{ds_path.stem}_engineered.csv",
                     cached_csv.read_bytes(),
                     task_id,
                 )
-                if cached_md.exists():
-                    workspace.write(
-                        "data_scientist",
-                        f"{ds_path.stem}_feature_suggestions.md",
-                        cached_md.read_text(encoding="utf-8", errors="replace"),
-                        task_id,
-                    )
-                else:
-                    workspace.write(
-                        "data_scientist",
-                        f"{ds_path.stem}_feature_suggestions.md",
-                        (
-                            "# Feature Suggestions\n\n"
-                            "Cached engineered dataset reused.\n"
-                            "No cached feature suggestions file was found for this dataset.\n"
-                        ),
-                        task_id,
-                    )
+                workspace.write(
+                    "data_scientist",
+                    f"{ds_path.stem}_feature_suggestions.md",
+                    cached_md.read_text(encoding="utf-8", errors="replace"),
+                    task_id,
+                )
                 await self.report(
                     "Data Scientist reused cached engineered dataset.\n"
                     f"Saved: shared/datasets/{ds_path.stem}_engineered.csv",
