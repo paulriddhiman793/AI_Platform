@@ -129,3 +129,5 @@ shared/github_config.json
 # Platform project storage (runtime output)
 platform_projects/
 platform_projects/**/
+Housing_feature_engineering.py
+Housing_feature_suggestions.md
