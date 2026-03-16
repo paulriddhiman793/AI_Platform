@@ -50,6 +50,16 @@ jobs:
           fi
           echo "HF_TOKEN length: ${#HF_TOKEN}"
 
+      - name: Normalize README encoding
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path("hf_space_repo/README.md")
+          if p.exists():
+              data = p.read_text(encoding="utf-8", errors="replace")
+              p.write_text(data, encoding="utf-8")
+          PY
+
       - name: Commit and push
         run: |
           cd hf_space_repo

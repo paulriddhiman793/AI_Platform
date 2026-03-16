@@ -1,4 +1,4 @@
-# AI Engineering Platform
+﻿# AI Engineering Platform
 
 A multi-agent ML workspace with a real-time web UI. Users upload datasets, run analysis and training, and download outputs from a platform-managed project folder.
 
@@ -192,7 +192,7 @@ High-level steps:
 ## Troubleshooting
 
 - CORS error on login: verify FRONTEND_ORIGINS and restart backend.
-- Tunnel can�t reach backend: use http://127.0.0.1:8000 in the tunnel URL (IPv4).
+- Tunnel can’t reach backend: use http://127.0.0.1:8000 in the tunnel URL (IPv4).
 - Access Files shows Forbidden: log out/in or select the correct project.
 
 ## Repository Structure
@@ -204,3 +204,4 @@ tools/          Workspace, RAG, utilities
 gui/            React + Vite frontend
 platform_projects/  Runtime project storage (ignored by git)
 ```
+
