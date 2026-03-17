@@ -15,8 +15,34 @@ const safeLocalStorageRemove = (key) => {
   try { localStorage.removeItem(key); } catch {}
 };
 
+const normalizeProjectState = (state) => {
+  if (!state || typeof state !== "object") return null;
+  const seen = new Set();
+  const normalizeMessages = (messages) => (Array.isArray(messages) ? messages : []).map((m, idx) => {
+    const baseId = m?.id ? String(m.id) : `msg_${idx}`;
+    const nextId = seen.has(baseId) ? uid() : baseId;
+    seen.add(nextId);
+    return { ...m, id: nextId };
+  });
+  const normalizeEntries = (entries, prefix) => (Array.isArray(entries) ? entries : []).map((e, idx) => {
+    const baseId = e?.id ? String(e.id) : `${prefix}_${idx}`;
+    const nextId = seen.has(baseId) ? uid() : baseId;
+    seen.add(nextId);
+    return { ...e, id: nextId };
+  });
+
+  return {
+    ...state,
+    chatList: (Array.isArray(state.chatList) ? state.chatList : []).map((chat) => ({
+      ...chat,
+      messages: normalizeMessages(chat?.messages),
+    })),
+    p2pLog: normalizeEntries(state.p2pLog, "p2p"),
+  };
+};
+
 let _id = 0;
-const uid = () => ++_id;
+const uid = () => `${Date.now().toString(36)}_${(++_id).toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 const fmt = (ts) => new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
 const TAG = {
@@ -400,6 +426,11 @@ export default function App() {
   const [authError, setAuthError] = useState("");
   const [showFilesPanel, setShowFilesPanel] = useState(false);
   const [showMLWorkerHelp, setShowMLWorkerHelp] = useState(false);
+  const [workerToken, setWorkerToken] = useState("");
+  const [workerStatus, setWorkerStatus] = useState("unknown");
+  const [workerBusy, setWorkerBusy] = useState(false);
+  const [workerError, setWorkerError] = useState("");
+  const [workerProjectPath, setWorkerProjectPath] = useState(() => safeLocalStorageGet("worker_project_path"));
   const [filesIndex, setFilesIndex] = useState([]);
   const [filesLoading, setFilesLoading] = useState(false);
   const [filesError, setFilesError] = useState("");
@@ -421,6 +452,10 @@ export default function App() {
   const groupMapRef   = useRef({});
   const recentMsgRef  = useRef(new Map());
   const projectStateRef = useRef({});
+  const projectStorageKey = useCallback((root) => {
+    if (!root || !authEmail) return "";
+    return `chat_state:${authEmail}:${root}`;
+  }, [authEmail]);
 
   // Track whether backend is truly live (not just WS connected)
   const backendLive = connStatus === "connected";
@@ -456,6 +491,26 @@ export default function App() {
   }, []);
 
   useEffect(() => { activeChatRef.current = activeChat; }, [activeChat]);
+
+  const loadProjectStateFromStorage = useCallback((root) => {
+    const key = projectStorageKey(root);
+    if (!key) return null;
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return null;
+      return normalizeProjectState(JSON.parse(raw));
+    } catch {
+      return null;
+    }
+  }, [projectStorageKey]);
+
+  const saveProjectStateToStorage = useCallback((root, state) => {
+    const key = projectStorageKey(root);
+    if (!key) return;
+    try {
+      localStorage.setItem(key, JSON.stringify(state));
+    } catch {}
+  }, [projectStorageKey]);
 
   const handleAuth = useCallback(async () => {
     if (!authEmail.trim() || !authPassword.trim()) return;
@@ -494,6 +549,12 @@ export default function App() {
       setFileLog([]);
       setDatasetReady(false);
       setDatasetInfo(null);
+      setAgents(Object.fromEntries(Object.entries(AGENTS).map(([k,v]) => [k, { ...v, status: "idle" }])));
+      setWorkerToken("");
+      setWorkerStatus("unknown");
+      setWorkerError("");
+      setWorkerBusy(false);
+      setWorkerProjectPath("");
       projectStateRef.current = {};
       groupMapRef.current = {};
       taskRouteRef.current = {};
@@ -514,6 +575,13 @@ export default function App() {
     setProjectRoot(null);
     setProjects([]);
     setProjectsLoaded(false);
+    setAgents(Object.fromEntries(Object.entries(AGENTS).map(([k,v]) => [k, { ...v, status: "idle" }])));
+    setWorkerToken("");
+    setWorkerStatus("unknown");
+    setWorkerError("");
+    setWorkerBusy(false);
+    setWorkerProjectPath("");
+    setShowMLWorkerHelp(false);
     projectStateRef.current = {};
   }, []);
 
@@ -644,15 +712,37 @@ export default function App() {
     fetchProjects();
   }, [authToken, fetchProjects]);
 
+  useEffect(() => {
+    if (!authToken || !backendLive) return;
+    if (!projectsLoaded || projects.length === 0) {
+      fetchProjects();
+    }
+  }, [authToken, backendLive, projectsLoaded, projects.length, fetchProjects]);
+
+  useEffect(() => {
+    if (!projectRoot || !authEmail) return;
+    saveProjectStateToStorage(projectRoot, {
+      chatList,
+      p2pLog,
+      activeChat,
+    });
+  }, [projectRoot, authEmail, chatList, p2pLog, activeChat, saveProjectStateToStorage]);
+
   const switchToProjectState = useCallback((next) => {
     if (projectRoot) {
-      projectStateRef.current[projectRoot] = {
+      const snapshot = {
         chatList,
         p2pLog,
         activeChat,
       };
+      projectStateRef.current[projectRoot] = snapshot;
+      saveProjectStateToStorage(projectRoot, snapshot);
     }
-    const saved = next?.project_root ? projectStateRef.current[next.project_root] : null;
+    let saved = next?.project_root ? projectStateRef.current[next.project_root] : null;
+    if (!saved && next?.project_root) {
+      saved = loadProjectStateFromStorage(next.project_root);
+      if (saved) projectStateRef.current[next.project_root] = saved;
+    }
     setChatList(saved?.chatList || createInitialChatList());
     setP2pLog(saved?.p2pLog || []);
     setActiveChat(saved?.activeChat || "team");
@@ -664,7 +754,7 @@ export default function App() {
     groupMapRef.current = {};
     taskRouteRef.current = {};
     recentMsgRef.current = new Map();
-  }, [projectRoot, chatList, p2pLog, activeChat]);
+  }, [projectRoot, chatList, p2pLog, activeChat, loadProjectStateFromStorage, saveProjectStateToStorage]);
 
   // â”€â”€ Handle incoming backend messages â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleWsMessage = useCallback((msg) => {
@@ -739,6 +829,7 @@ export default function App() {
     }
 
     if (type === "agent_status") {
+      if (msg.user_email && authEmail && msg.user_email !== authEmail) return;
       setAgents(prev => ({ ...prev, [from]: { ...prev[from], status: content } }));
       return;
     }
@@ -884,6 +975,7 @@ export default function App() {
             type: "user_message", content: text, to: "team",
             task_id: taskId,
             auth_token: authToken,
+            worker_project_path: workerProjectPath || "",
           }));
       } else {
         // Backend offline â€” run mock scenario (it handles everything locally)
@@ -912,6 +1004,7 @@ export default function App() {
             to: agentId,
             task_id: taskId,
             auth_token: authToken,
+            worker_project_path: workerProjectPath || "",
           }));
         return;
       }
@@ -1068,6 +1161,74 @@ export default function App() {
     }
   }, [authToken, projectRoot]);
 
+  const fetchWorkerStatus = useCallback(async () => {
+    if (!authToken) return;
+    setWorkerBusy(true);
+    setWorkerError("");
+    try {
+      const res = await fetch(`${API_URL}/worker/status`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ auth_token: authToken }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Failed to check worker status.");
+      setWorkerStatus(data.connected ? "connected" : "disconnected");
+    } catch (err) {
+      setWorkerStatus("error");
+      setWorkerError(err?.message || String(err));
+    } finally {
+      setWorkerBusy(false);
+    }
+  }, [authToken]);
+
+  const generateWorkerToken = useCallback(async () => {
+    if (!authToken) return;
+    setWorkerBusy(true);
+    setWorkerError("");
+    try {
+      const res = await fetch(`${API_URL}/worker/pair`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ auth_token: authToken }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Failed to generate pairing token.");
+      setWorkerToken(data.pair_token || "");
+      setWorkerStatus("disconnected");
+    } catch (err) {
+      setWorkerError(err?.message || String(err));
+    } finally {
+      setWorkerBusy(false);
+    }
+  }, [authToken]);
+
+  const handleSaveWorkerPath = useCallback(() => {
+    safeLocalStorageSet("worker_project_path", workerProjectPath || "");
+  }, [workerProjectPath]);
+
+  const handleDownloadWorker = useCallback(async () => {
+    setWorkerBusy(true);
+    setWorkerError("");
+    try {
+      const res = await fetch(`${API_URL}/worker/download`);
+      if (!res.ok) throw new Error("Failed to download worker.");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "local_ml_worker.zip";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setWorkerError(err?.message || String(err));
+    } finally {
+      setWorkerBusy(false);
+    }
+  }, []);
+
   const openFile = useCallback(async (path) => {
     if (!authToken || !path) return;
     setSelectedFile(path);
@@ -1122,31 +1283,33 @@ export default function App() {
   }, [authToken, switchToProjectState, fetchFilesIndex]);
 
   const handleDownloadZip = useCallback(async () => {
-    if (!authToken) return;
+    if (!authToken || !projectRoot) return;
     try {
-      const res = await fetch(`${API_URL}/project_zip`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ auth_token: authToken }),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || "Failed to download ZIP.");
-      }
-      const blob = await res.blob();
-      const name = `${projectName || "project"}.zip`;
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = name;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
+      setFilesError("");
+      const form = document.createElement("form");
+      form.method = "POST";
+      form.action = `${API_URL}/project_zip`;
+      form.style.display = "none";
+
+      const tokenInput = document.createElement("input");
+      tokenInput.type = "hidden";
+      tokenInput.name = "auth_token";
+      tokenInput.value = authToken;
+
+      const rootInput = document.createElement("input");
+      rootInput.type = "hidden";
+      rootInput.name = "project_root";
+      rootInput.value = projectRoot;
+
+      form.appendChild(tokenInput);
+      form.appendChild(rootInput);
+      document.body.appendChild(form);
+      form.submit();
+      form.remove();
     } catch (err) {
       setFilesError(err?.message || String(err));
     }
-  }, [authToken, projectName]);
+  }, [authToken, projectRoot]);
 
   const sendInitProject = useCallback((name) => {
     if (!backendLive || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
@@ -1269,16 +1432,27 @@ export default function App() {
           )}
           {backendLive && (
             <button
-              onClick={() => setShowMLWorkerHelp(true)}
+              onClick={() => { setShowMLWorkerHelp(true); fetchWorkerStatus(); }}
               style={{ fontSize: 10, padding: "6px 10px", borderRadius: 6, background: "#0b0b0b", border: "1px solid #1a1a1a", color: "#9ca3af", cursor: "pointer" }}
             >
               Get ML Engineer
             </button>
           )}
-          {backendLive && projectRoot && (
+          {backendLive && (
             <button
               onClick={handleOpenFilesPanel}
-              style={{ fontSize: 10, padding: "6px 10px", borderRadius: 6, background: "#0b0b0b", border: "1px solid #1a1a1a", color: "#9ca3af", cursor: "pointer" }}
+              disabled={!projectRoot}
+              title={projectRoot ? "Open project files" : "Create or select a chat first"}
+              style={{
+                fontSize: 10,
+                padding: "6px 10px",
+                borderRadius: 6,
+                background: "#0b0b0b",
+                border: "1px solid #1a1a1a",
+                color: projectRoot ? "#9ca3af" : "#4b5563",
+                cursor: projectRoot ? "pointer" : "not-allowed",
+                opacity: projectRoot ? 1 : 0.7,
+              }}
             >
               Access Files
             </button>
@@ -1419,12 +1593,63 @@ export default function App() {
                 The local worker runs on your computer and connects back to the platform. This is required if you want
                 ML Engineer to execute commands and deploy models locally.
               </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <div style={{ fontSize: 11, color: "#9ca3af" }}>Local project folder (used for deploy)</div>
+                <input
+                  value={workerProjectPath}
+                  onChange={e => setWorkerProjectPath(e.target.value)}
+                  onBlur={handleSaveWorkerPath}
+                  placeholder="C:\\path\\to\\project"
+                  style={{ background: "#0b0b0b", border: "1px solid #1a1a1a", color: "#cbd5f5", borderRadius: 6, padding: "8px 10px", fontSize: 11 }}
+                />
+                <div style={{ fontSize: 10, color: "#3a3a3a" }}>
+                  This path will be used as the working directory when deploying locally.
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <button
+                  onClick={handleDownloadWorker}
+                  disabled={workerBusy}
+                  style={{ fontSize: 11, padding: "8px 10px", borderRadius: 6, background: "#0b0b0b", border: "1px solid #1a1a1a", color: "#9ca3af", cursor: "pointer", opacity: workerBusy ? 0.5 : 1 }}
+                >
+                  Download Worker
+                </button>
+                <button
+                  onClick={generateWorkerToken}
+                  disabled={workerBusy}
+                  style={{ fontSize: 11, padding: "8px 10px", borderRadius: 6, background: "#111827", border: "1px solid #374151", color: "#cbd5f5", cursor: "pointer", opacity: workerBusy ? 0.5 : 1 }}
+                >
+                  {workerBusy ? "Generating..." : "Generate Pairing Token"}
+                </button>
+                <button
+                  onClick={fetchWorkerStatus}
+                  disabled={workerBusy}
+                  style={{ fontSize: 11, padding: "8px 10px", borderRadius: 6, background: "#0b0b0b", border: "1px solid #1a1a1a", color: "#9ca3af", cursor: "pointer", opacity: workerBusy ? 0.5 : 1 }}
+                >
+                  Check Connection
+                </button>
+                <div style={{ fontSize: 11, color: "#9ca3af" }}>
+                  Status: <span style={{ color: workerStatus === "connected" ? "#4ade80" : workerStatus === "error" ? "#f87171" : "#facc15" }}>{workerStatus}</span>
+                </div>
+              </div>
+              {workerError && (
+                <div style={{ fontSize: 11, color: "#f87171" }}>{workerError}</div>
+              )}
+              {workerToken && (
+                <div style={{ fontSize: 12, color: "#cbd5f5", background: "#0b0b0b", border: "1px solid #151515", borderRadius: 8, padding: 10, fontFamily: "monospace" }}>
+                  Pairing Token: {workerToken}
+                </div>
+              )}
               <div style={{ fontSize: 12, color: "#c8c8d0", lineHeight: 1.8, background: "#0b0b0b", border: "1px solid #151515", borderRadius: 8, padding: 12 }}>
                 <div style={{ fontWeight: 700, marginBottom: 6, color: "#e8e8f0" }}>How to start</div>
                 <div>1. Download the Local ML Worker (provided by your admin).</div>
-                <div>2. Run it and enter the pairing token from this platform.</div>
-                <div>3. Keep it running in the background.</div>
-                <div>4. Ask: “deploy the trained model locally” or “start the model server”.</div>
+                <div>2. Install dependencies: <span style={{ fontFamily: "monospace" }}>pip install -r tools/local_worker_requirements.txt</span></div>
+                <div>3. Run the worker:</div>
+                <div style={{ fontFamily: "monospace", fontSize: 11, marginLeft: 12 }}>
+                  python tools/local_worker.py --server {API_URL} --token {workerToken || "&lt;PAIR_TOKEN&gt;"} --root {workerProjectPath || "\"C:\\\\path\\\\to\\\\project\""}
+                </div>
+                <div>4. Keep it running in the background.</div>
+                <div>5. Ask: “deploy the trained model locally” or “start the model server”.</div>
               </div>
               <div style={{ fontSize: 11, color: "#4b5563" }}>
                 Note: This does not run automatically. A user action is required to download and launch the worker.

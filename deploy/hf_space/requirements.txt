@@ -17,3 +17,4 @@ lancedb
 tqdm
 matplotlib
 seaborn
+certifi

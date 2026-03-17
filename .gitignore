@@ -1,5 +1,4 @@
-Housing.csv
-# ─── Python ──────────────────────────────────────────────────────────────────
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -10,37 +9,35 @@ __pycache__/
 # Virtual environments
 venv/
 env/
-.env/
 .venv/
 ENV/
 
-# Distribution / packaging
+# Packaging
 dist/
 build/
 *.egg-info/
 *.egg
 .eggs/
 
-# ─── Environment & Secrets ───────────────────────────────────────────────────
+# Environment and secrets
 .env
 .env.local
 .env.*.local
 *.env
+gui/.env
+gui/.env.local
 
-# ─── Node / Frontend ─────────────────────────────────────────────────────────
+# Node / frontend
 node_modules/
 gui/node_modules/
+gui/dist/
+gui/.vite/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# Vite build output
-gui/dist/
-gui/.vite/
-dist/
-
-# ─── IDE & Editor ────────────────────────────────────────────────────────────
+# IDE / editor
 .vscode/
 .idea/
 *.swp
@@ -49,17 +46,19 @@ dist/
 .DS_Store
 Thumbs.db
 
-# ─── Logs ────────────────────────────────────────────────────────────────────
+# Logs
 *.log
 logs/
 *.log.*
 
-# ─── ML & Data ───────────────────────────────────────────────────────────────
-# MLflow
-mlruns/
-mlartifacts/
+# Tests and coverage
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+*.cover
 
-# Model files (can be large)
+# Data and model artifacts
 *.pkl
 *.pickle
 *.joblib
@@ -68,69 +67,37 @@ mlartifacts/
 *.pth
 *.onnx
 *.bin
+mlruns/
+mlartifacts/
+catboost_info/
 
-# Datasets (keep structure, ignore actual data)
-data/*.csv
-data/*.json
-data/*.parquet
-data/*.feather
-data/*.xlsx
-!data/.gitkeep
-
-# ─── Reports & Outputs ───────────────────────────────────────────────────────
-reports/*.xlsx
-reports/*.pdf
-!reports/.gitkeep
-
-# ─── ChromaDB (Phase 9) ──────────────────────────────────────────────────────
-chroma_db/
-memory/chroma/
-*.chroma
-
-# ─── Docker ──────────────────────────────────────────────────────────────────
-.docker/
-
-# ─── Testing ─────────────────────────────────────────────────────────────────
-.pytest_cache/
-.coverage
-htmlcov/
-coverage.xml
-*.cover
-
-# ─── Misc ────────────────────────────────────────────────────────────────────
-*.bak
-*.tmp
-*.temp
-
-
-catboost_info
-run_demo.py
-.agent_tmp
-
-# AI Platform runtime outputs
-da_pipeline.log
-da_report.txt
-da_results.json
-ml_pipeline.log
-ml_results.json
-ml_brain_output/
-
-# Workspace artifacts (local runs)
-shared/output.txt
-shared/phase3_check.log
-shared/phase3_check_report.*
-shared/phase4_state_report.txt
+# Runtime outputs
+.agent_tmp/
+platform_projects/
 shared/datasets/
 shared/rag/
 shared/state/
 shared/graphs/
 shared/github_config.json
+shared/output.txt
+shared/phase3_check.log
+shared/phase3_check_report.*
+shared/phase4_state_report.txt
+ml_brain_output/
+da_pipeline.log
+da_report.txt
+da_results.json
+ml_pipeline.log
+ml_results.json
 
-# Platform project storage (runtime output)
-platform_projects/
-platform_projects/**/
+# Temporary / generated scripts in runtime projects
 Housing_feature_engineering.py
 Housing_feature_suggestions.md
 fe.py
 fe_1.py
 model_transparency.py
+
+# Misc
+*.bak
+*.tmp
+*.temp

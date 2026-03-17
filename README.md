@@ -168,6 +168,9 @@ Set this in GitHub ? Repo ? Settings ? Secrets and variables ? Actions:
 Backend (.env at repo root):
 
 ```
+HOST=0.0.0.0
+PORT=8000
+PUBLIC_BASE_URL=https://your-public-backend-url   # optional but recommended for accurate startup logs
 FRONTEND_ORIGINS=https://your-frontend-domain
 PLATFORM_STORAGE_ROOT=./platform_projects
 MONGO_URI=mongodb://localhost:27017
@@ -181,6 +184,11 @@ Frontend (Vercel or local .env in gui/):
 VITE_API_URL=https://your-public-backend-url
 VITE_WS_URL=wss://your-public-backend-url/ws
 ```
+
+Ready-to-fill templates are included in:
+
+- `.env.example`
+- `gui/.env.example`
 
 ## Deploying Frontend (Vercel) with Local Backend
 

@@ -9,6 +9,7 @@ import asyncio
 import os
 import re
 import atexit
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -28,6 +29,22 @@ from agents.github_agent import GitHubAgent
 GITHUB_HTTP_RE = re.compile(r"^https://github\.com/[\w.-]+/[\w.-]+(?:\.git)?/?$")
 GITHUB_SSH_RE = re.compile(r"^git@github\.com:[\w.-]+/[\w.-]+(?:\.git)?$")
 GITHUB_SSH_URL_RE = re.compile(r"^ssh://git@github\.com/[\w.-]+/[\w.-]+(?:\.git)?/?$")
+
+
+if sys.platform.startswith("win") and hasattr(asyncio, "WindowsSelectorEventLoopPolicy"):
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+
+def _display_host() -> str:
+    public_base = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
+    if public_base:
+        return public_base
+    host = (os.getenv("HOST") or "0.0.0.0").strip()
+    port = int(os.getenv("PORT", "8000"))
+    if host in ("0.0.0.0", "::"):
+        host = "localhost"
+    scheme = "https" if port == 443 else "http"
+    return f"{scheme}://{host}:{port}"
 
 
 def _load_env_file(env_path: Path) -> None:
@@ -199,9 +216,10 @@ async def main() -> None:
 
     # 5. Start uvicorn in the background
     port = int(os.getenv("PORT", "8000"))
+    host = (os.getenv("HOST") or "0.0.0.0").strip()
     config = uvicorn.Config(
         app=app,
-        host="0.0.0.0",
+        host=host,
         port=port,
         log_level="warning",
         # disable reload - reload spawns a second process
@@ -209,8 +227,10 @@ async def main() -> None:
     )
     server = uvicorn.Server(config)
 
-    print("\nServer: ws://localhost:8000/ws")
-    print("GUI:    cd gui && npm run dev -> http://localhost:5173")
+    base_url = _display_host()
+    ws_url = re.sub(r"^http", "ws", base_url, count=1).rstrip("/") + "/ws"
+    print(f"\nServer: {ws_url}")
+    print("GUI:    cd gui && npm run dev")
     print("=" * 60 + "\n")
 
     # 6. Run everything together

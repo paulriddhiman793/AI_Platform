@@ -141,6 +141,11 @@ class OrchestratorAgent(BaseAgent):
     async def _dispatch_pipeline_phase(self, task: dict, task_id: str | None) -> None:
         phase = task["phase"]
         prompt = task["user_message"]
+        extra = {}
+        if task.get("auth_token"):
+            extra["auth_token"] = task.get("auth_token")
+        if task.get("worker_project_path"):
+            extra["worker_project_path"] = task.get("worker_project_path")
 
         if phase == "data_review":
             task["expected"] = {"data_scientist", "data_analyst"}
@@ -149,11 +154,13 @@ class OrchestratorAgent(BaseAgent):
                 "data_scientist",
                 f"{prompt}\nAnalyse data now. Start with EDA and feature recommendations. Write reports first.",
                 task_id,
+                extra=extra,
             )
             await self.message(
                 "data_analyst",
                 f"{prompt}\nAnalyse data now. Validate data quality/history and write monitoring report first.",
                 task_id,
+                extra=extra,
             )
             await self.report(
                 "Workflow started: Data Scientist + Data Analyst first. ML Engineer waits for reports.",
@@ -168,6 +175,7 @@ class OrchestratorAgent(BaseAgent):
                 "ml_engineer",
                 f"{prompt}\nUse hybrid RAG from shared/output.txt and reports to train the model.",
                 task_id,
+                extra=extra,
             )
             await self.report("Phase 2: ML Engineer training with RAG context.", task_id)
             return
@@ -176,6 +184,8 @@ class OrchestratorAgent(BaseAgent):
         content = payload.get("content", "")
         task_id = payload.get("task_id")
         from_agent = payload.get("from", "user")
+        auth_token = (payload.get("auth_token") or "").strip()
+        worker_project_path = (payload.get("worker_project_path") or "").strip()
 
         if from_agent != "user" and task_id not in self._active_tasks:
             return None
@@ -221,12 +231,30 @@ class OrchestratorAgent(BaseAgent):
                     "user_message": content,
                     "agents_assigned": ["ml_engineer"],
                     "results": [],
+                    "auth_token": auth_token,
+                    "worker_project_path": worker_project_path,
                 }
             await self.report(
                 "Training-process request received. Assigning: ML Engineer.",
                 task_id,
             )
-            await self.message("ml_engineer", content, task_id)
+            extra = {"auth_token": auth_token, "worker_project_path": worker_project_path} if auth_token else {"worker_project_path": worker_project_path}
+            await self.message("ml_engineer", content, task_id, extra=extra)
+            return None
+
+        if "deploy" in content.lower() and ("local" in content.lower() or "locally" in content.lower()):
+            if task_id:
+                self._active_tasks[task_id] = {
+                    "flow": "generic",
+                    "user_message": content,
+                    "agents_assigned": ["ml_engineer"],
+                    "results": [],
+                    "auth_token": auth_token,
+                    "worker_project_path": worker_project_path,
+                }
+            await self.report("Local deploy request received. Assigning: ML Engineer.", task_id)
+            extra = {"auth_token": auth_token, "worker_project_path": worker_project_path} if auth_token else {"worker_project_path": worker_project_path}
+            await self.message("ml_engineer", content, task_id, extra=extra)
             return None
 
         if self._is_build_flow(content):
@@ -238,6 +266,8 @@ class OrchestratorAgent(BaseAgent):
                     "user_message": content,
                     "agents_assigned": ["data_scientist", "data_analyst", "ml_engineer"],
                     "results": [],
+                    "auth_token": auth_token,
+                    "worker_project_path": worker_project_path,
                 }
                 if phase == "ml_build":
                     await self.report(
@@ -254,12 +284,14 @@ class OrchestratorAgent(BaseAgent):
                 "user_message": content,
                 "agents_assigned": agents,
                 "results": [],
+                "auth_token": auth_token,
             }
 
         agent_names = ", ".join(a.replace("_", " ").title() for a in agents)
         await self.report(f"Task received. Assigning: {agent_names}.", task_id)
+        extra = {"auth_token": auth_token, "worker_project_path": worker_project_path} if auth_token else {"worker_project_path": worker_project_path}
         for agent_id in agents:
-            await self.message(agent_id, content, task_id)
+            await self.message(agent_id, content, task_id, extra=extra)
         return None
 
     def _summarise(self, task: dict) -> str:

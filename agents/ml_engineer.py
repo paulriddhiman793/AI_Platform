@@ -6,6 +6,7 @@ import asyncio
 import ast
 import re
 import math
+import base64
 from pathlib import Path
 import os
 from agents.base_agent import BaseAgent
@@ -268,6 +269,192 @@ class MLEngineerAgent(BaseAgent):
                 return self._extract_json_block(output, "__ML_RESULTS_BEGIN__", "__ML_RESULTS_END__")
             except Exception:
                 return None
+        return None
+
+    def _local_worker_api_base(self) -> str:
+        base = (os.getenv("API_URL") or "").strip()
+        if not base:
+            port = (os.getenv("PORT") or "8000").strip()
+            base = f"http://127.0.0.1:{port}"
+        return base.rstrip("/")
+
+    async def _local_worker_exec(self, auth_token: str, command: str, detach: bool = True, cwd: str | None = None) -> dict:
+        import requests
+
+        url = f"{self._local_worker_api_base()}/worker/exec"
+        timeout_s = 150
+
+        def _call():
+            return requests.post(
+                url,
+                json={
+                    "auth_token": auth_token,
+                    "command": command,
+                    "detach": detach,
+                    "cwd": cwd or "",
+                },
+                timeout=timeout_s,
+            )
+
+        resp = await asyncio.to_thread(_call)
+        data = resp.json() if resp.content else {}
+        if not resp.ok:
+            raise RuntimeError(data.get("detail") or f"Worker exec failed ({resp.status_code})")
+        return data
+
+    async def _local_worker_write_file(self, auth_token: str, rel_path: str, content: str, cwd: str | None = None) -> dict:
+        import requests
+
+        url = f"{self._local_worker_api_base()}/worker/write_file"
+        timeout_s = 150
+        payload = {
+            "auth_token": auth_token,
+            "path": rel_path,
+            "content_b64": base64.b64encode(content.encode("utf-8")).decode("ascii"),
+            "cwd": cwd or "",
+        }
+
+        def _call():
+            return requests.post(url, json=payload, timeout=timeout_s)
+
+        resp = await asyncio.to_thread(_call)
+        data = resp.json() if resp.content else {}
+        if not resp.ok:
+            raise RuntimeError(data.get("detail") or f"Worker write_file failed ({resp.status_code})")
+        return data
+
+    def _serve_model_script(self) -> str:
+        try:
+            p = Path(__file__).resolve().parent.parent / "tools" / "serve_model.py"
+            return p.read_text(encoding="utf-8")
+        except Exception:
+            return ""
+
+    async def _write_file_via_exec_chunks(self, auth_token: str, rel_path: str, content: str, cwd: str | None) -> None:
+        data = content.encode("utf-8")
+        init_cmd = (
+            "python -c \"from pathlib import Path; "
+            f"p=Path(r'{rel_path}'); "
+            "p.parent.mkdir(parents=True, exist_ok=True); "
+            "p.write_bytes(b'')\""
+        )
+        await self._local_worker_exec(auth_token, init_cmd, detach=False, cwd=cwd)
+        chunk_size = 1200
+        for i in range(0, len(data), chunk_size):
+            chunk = data[i:i + chunk_size]
+            chunk_b64 = base64.b64encode(chunk).decode("ascii")
+            append_cmd = (
+                "python -c \"import base64; from pathlib import Path; "
+                f"p=Path(r'{rel_path}'); "
+                f"p.open('ab').write(base64.b64decode('{chunk_b64}'))\""
+            )
+            result = await self._local_worker_exec(auth_token, append_cmd, detach=False, cwd=cwd)
+            exec_result = result.get("result") or {}
+            if int(exec_result.get("returncode", 1)) != 0:
+                raise RuntimeError(exec_result.get("stderr") or "Chunked file write failed")
+
+    async def _ensure_local_serve_script(self, auth_token: str, cwd: str | None) -> None:
+        script = self._serve_model_script()
+        if not script:
+            return
+        try:
+            result = await self._local_worker_write_file(
+                auth_token=auth_token,
+                rel_path="ml_engineer/serve_model.py",
+                content=script,
+                cwd=cwd,
+            )
+            write_result = result.get("result") or {}
+            if int(write_result.get("returncode", 1)) != 0:
+                raise RuntimeError(write_result.get("stderr") or "Failed to write serve_model.py")
+        except Exception:
+            await self._write_file_via_exec_chunks(
+                auth_token=auth_token,
+                rel_path="ml_engineer/serve_model.py",
+                content=script,
+                cwd=cwd,
+            )
+
+    def _safe_model_name(self, name: str) -> str:
+        if not name:
+            return ""
+        return re.sub(r"[^a-zA-Z0-9_.-]+", "_", name).strip("_").lower()
+
+    def _model_aliases(self, name: str) -> set[str]:
+        raw = self._safe_model_name(name)
+        if not raw:
+            return set()
+        norm = re.sub(r"[^a-z0-9]+", "", raw)
+        aliases = {raw, norm}
+        trimmed = norm.replace("regressor", "").replace("classifier", "")
+        if trimmed:
+            aliases.add(trimmed)
+        alias_map = {
+            "xgboost": {"xgb", "xgboost", "xgbregressor", "xgbclassifier"},
+            "xgb": {"xgb", "xgboost", "xgbregressor", "xgbclassifier"},
+            "lightgbm": {"lgbm", "lightgbm", "lgbmregressor", "lgbmclassifier"},
+            "lgbm": {"lgbm", "lightgbm", "lgbmregressor", "lgbmclassifier"},
+            "randomforest": {"randomforest", "randomforestregressor", "randomforestclassifier"},
+            "gradientboosting": {"gradientboosting", "gradientboostingregressor", "gradientboostingclassifier"},
+            "linear": {"linear", "linearregression", "logisticregression"},
+            "catboost": {"catboost", "catboostregressor", "catboostclassifier"},
+            "ridge": {"ridge"},
+            "lasso": {"lasso"},
+            "svm": {"svm", "svr", "svc"},
+            "svr": {"svm", "svr"},
+            "svc": {"svm", "svc"},
+            "knn": {"knn", "kneighbors", "kneighborsregressor", "kneighborsclassifier"},
+        }
+        for key, vals in alias_map.items():
+            if key in aliases or key in norm:
+                aliases.update(vals)
+        return {a for a in aliases if a}
+
+    def _extract_model_hint(self, msg: str) -> str | None:
+        known = [
+            "xgboost", "xgb", "lightgbm", "lgbm", "catboost", "randomforest",
+            "gradientboosting", "ridge", "lasso", "linear", "elasticnet",
+            "svm", "svr", "knn",
+        ]
+        for k in known:
+            if k in msg:
+                return k
+        m = re.search(r"model\s*[:\-]?\s*(\w+)", msg, re.I)
+        if m:
+            return m.group(1)
+        return None
+
+    def _resolve_local_model_path(self, base_dir: Path, model_hint: str | None, dataset_tag: str | None) -> Path | None:
+        tags = []
+        if dataset_tag:
+            tags.append(dataset_tag)
+        tags += ["engineered", "raw"]
+        seen = set()
+        hint_aliases = self._model_aliases(model_hint or "")
+        for tag in tags:
+            if tag in seen:
+                continue
+            seen.add(tag)
+            models_dir = base_dir / "ml_engineer" / f"models_{tag}"
+            if not models_dir.exists():
+                continue
+            files = list(models_dir.glob("*.joblib"))
+            if not files:
+                continue
+            if hint_aliases:
+                for f in files:
+                    stem_aliases = self._model_aliases(f.stem)
+                    if hint_aliases.intersection(stem_aliases):
+                        return f
+            # fallback: latest
+            return sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)[0]
+        # fallback to single model path
+        fallback = base_dir / "ml_engineer" / "model" / "model.joblib"
+        if fallback.exists():
+            return fallback
+        fallback = base_dir / "shared" / "model.joblib"
+        if fallback.exists():
+            return fallback
         return None
 
     def _find_dataset_from_message(self, msg: str) -> tuple[Path | None, str | None]:
@@ -856,6 +1043,12 @@ log.info(f"Task: {{task_type}}  |  Target unique values: {{n_unique}}")
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 num_cols_raw = X.select_dtypes(include=[np.number]).columns.tolist()
 cat_cols_raw = [c for c in X.columns if c not in num_cols_raw]
+
+for col in cat_cols_raw:
+    try:
+        X[col] = X[col].astype("string")
+    except Exception:
+        X[col] = X[col].astype(str)
 
 leaky_features   = []
 suspect_features = []
@@ -1623,6 +1816,8 @@ from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 import joblib
 from model_transparency import infer_target_column
 
+N_JOBS = int(os.getenv("ML_N_JOBS", "1"))
+
 df = pd.read_csv(r"{ds}")
 target_col, confidence, reason, _ = infer_target_column(df, verbose=False)
 print("DATASET_PATH:", r"{ds}")
@@ -1646,6 +1841,11 @@ for col in num_cols:
         pass
 
 cat_cols = [c for c in X.columns if c not in num_cols]
+for col in cat_cols:
+    try:
+        X[col] = X[col].astype("string")
+    except Exception:
+        X[col] = X[col].astype(str)
 
 num_pipe = Pipeline(steps=[
     ("imputer", SimpleImputer(strategy="median")),
@@ -1807,6 +2007,8 @@ for k, v in null_rate.items():
         content = payload.get("content", "")
         task_id = payload.get("task_id")
         c = content.lower()
+        auth_token = (payload.get("auth_token") or "").strip()
+        worker_project_path = (payload.get("worker_project_path") or "").strip()
 
         marker = "__PROBE_OUTPUT_BEGIN__"
         if marker in content:
@@ -1814,6 +2016,67 @@ for k, v in null_rate.items():
             if workspace.is_initialized:
                 workspace.write("ml_engineer", "probe_output.log", probe_out, task_id)
             await self.report(probe_out, task_id)
+            return None
+
+        if ("deploy" in c and ("local" in c or "locally" in c)) or "deploy locally" in c or "deploy local" in c:
+            if not auth_token:
+                await self.report("Local deploy requires an authenticated session. Please log in again.", task_id)
+                return None
+            deploy_cmd = (os.getenv("LOCAL_DEPLOY_CMD") or "").strip()
+            deploy_port = (os.getenv("LOCAL_DEPLOY_PORT") or "8001").strip()
+            deploy_cwd = (os.getenv("LOCAL_DEPLOY_CWD") or "").strip()
+            if not deploy_cwd and worker_project_path:
+                deploy_cwd = worker_project_path
+            if not deploy_cwd and workspace.project_root:
+                deploy_cwd = str(workspace.project_root)
+            if not deploy_cwd:
+                await self.report("Local deploy failed: no project directory provided.", task_id)
+                return None
+
+            # Resolve model and dataset tag from the user's request.
+            ds_path, inferred_label = self._find_dataset_from_message(c)
+            dataset_tag = "engineered" if "engineered" in c else ("raw" if "raw" in c else inferred_label)
+            payload_results = self._load_ml_results(dataset_tag or "engineered") or self._load_ml_results("raw")
+            model_hint = None
+            if payload_results:
+                model_result = self._match_model_in_results(c, payload_results) or payload_results.get("best_model")
+                if model_result:
+                    model_hint = model_result.get("model")
+            if not model_hint:
+                model_hint = self._extract_model_hint(c)
+
+            base_dir = Path(deploy_cwd).resolve()
+            model_path = self._resolve_local_model_path(base_dir, model_hint, dataset_tag)
+            if not model_path:
+                await self.report("Local deploy failed: could not find a trained model in the project folder.", task_id)
+                return None
+
+            task_type = payload_results.get("task_type") if payload_results else None
+            target_col = payload_results.get("target_col") if payload_results else None
+            model_arg = str(model_path)
+            dataset_arg = str(ds_path) if ds_path else ""
+
+            if not deploy_cmd:
+                await self._ensure_local_serve_script(auth_token, str(base_dir))
+                deploy_cmd = (
+                    f"python ml_engineer/serve_model.py --model \"{model_arg}\" "
+                    + (f"--dataset \"{dataset_arg}\" " if dataset_arg else "")
+                    + f"--host 0.0.0.0 --port {deploy_port}"
+                    + (f" --task {task_type}" if task_type else "")
+                    + (f" --target {target_col}" if target_col else "")
+                )
+            try:
+                result = await self._local_worker_exec(auth_token, deploy_cmd, detach=True, cwd=str(base_dir))
+            except Exception as exc:
+                await self.report(f"Local deploy failed: {exc}", task_id)
+                return None
+            await self.report(
+                "Local deploy started via worker.\n"
+                f"Command: {deploy_cmd}\n"
+                f"CWD: {base_dir}\n"
+                f"Result: {result.get('result') or result}",
+                task_id,
+            )
             return None
 
         if any(k in c for k in ("training process", "training proceeded", "how training", "model transparency")):
@@ -1876,14 +2139,18 @@ for k, v in null_rate.items():
                 )
                 return None
 
-            await self.report("ML Engineer multi-model Optuna training starting (raw + engineered).", task_id)
+            await self.report("ML Engineer multi-model Optuna training starting (engineered first, then raw).", task_id)
 
             raw_payload = None
             eng_payload = None
-            if raw_path:
-                raw_payload = await self._run_training_for_dataset(Path(raw_path), "raw", task_id)
             if eng_path:
                 eng_payload = await self._run_training_for_dataset(Path(eng_path), "engineered", task_id)
+            else:
+                await self.report("Engineered dataset not found. Proceeding with raw dataset only.", task_id)
+            if raw_path:
+                raw_payload = await self._run_training_for_dataset(Path(raw_path), "raw", task_id)
+            else:
+                await self.report("Raw dataset not found. Proceeding with engineered dataset only.", task_id)
 
             # Preserve legacy output names using engineered if available, else raw
             if workspace.is_initialized:

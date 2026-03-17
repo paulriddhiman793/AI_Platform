@@ -125,13 +125,14 @@ class BaseAgent(ABC):
     def get_tools(self) -> list:
         return []
 
-    async def message(self, to_agent: str, content: str, task_id: str = None) -> None:
+    async def message(self, to_agent: str, content: str, task_id: str = None, extra: dict | None = None) -> None:
         print(f"[{self.AGENT_ID}] -> [{to_agent}]: {content[:60]}...")
         await send_to_agent(
             from_agent=self.AGENT_ID,
             to_agent=to_agent,
             content=content,
             task_id=task_id,
+            extra=extra,
         )
 
     async def report(self, content: str, task_id: str = None) -> None:

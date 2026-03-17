@@ -69,6 +69,7 @@ async def send_to_agent(
     to_agent: str,
     content: str,
     task_id: Optional[str] = None,
+    extra: Optional[dict] = None,
 ) -> None:
     """
     Send a p2p message to an agent inbox and copy it to p2p.monitor for GUI activity feed.
@@ -82,6 +83,8 @@ async def send_to_agent(
         "task_id": task_id,
         "type": "p2p",
     }
+    if extra:
+        msg.update(extra)
     await bus.publish(f"agent.{to_agent}", msg)
     await bus.publish("p2p.monitor", msg)
 

@@ -20,8 +20,8 @@ from pathlib import Path
 from typing import Set
 import time
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
+from fastapi.responses import StreamingResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.message_bus import bus, send_to_agent
@@ -52,10 +52,18 @@ _load_env_file(Path(__file__).resolve().parent.parent / ".env")
 app = FastAPI(title="AI Engineering Platform")
 
 origins_env = (os.getenv("FRONTEND_ORIGINS") or "").strip()
-cors_origins = [o.strip() for o in origins_env.split(",") if o.strip()] or [
-    "http://localhost:5173",
-    "http://localhost:3000",
-]
+cors_origins = [o.strip() for o in origins_env.split(",") if o.strip()]
+for local_origin in ("http://localhost:5173", "http://localhost:3000",
+                     "http://127.0.0.1:5173", "http://127.0.0.1:3000"):
+    if local_origin not in cors_origins:
+        cors_origins.append(local_origin)
+if not cors_origins:
+    cors_origins = [
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:3000",
+    ]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
@@ -103,6 +111,119 @@ async def verify(payload: dict):
     token = payload.get("auth_token")
     email = _require_auth_token(token)
     return {"status": "ok", "email": email}
+
+
+@app.post("/worker/pair")
+async def worker_pair(payload: dict):
+    token = payload.get("auth_token")
+    email = _require_auth_token(token)
+    ttl_s = 900
+    pair_token = _issue_pair_token(email, ttl_s=ttl_s)
+    return {"status": "ok", "pair_token": pair_token, "expires_in": ttl_s}
+
+
+@app.post("/worker/status")
+async def worker_status(payload: dict):
+    token = payload.get("auth_token")
+    email = _require_auth_token(token)
+    ws = _worker_sessions.get(email.lower())
+    return {"status": "ok", "connected": bool(ws)}
+
+
+@app.get("/worker/download")
+async def worker_download():
+    repo_root = Path(__file__).resolve().parent.parent
+    worker_py = repo_root / "tools" / "local_worker.py"
+    worker_req = repo_root / "tools" / "local_worker_requirements.txt"
+    if not worker_py.exists() or not worker_req.exists():
+        raise HTTPException(status_code=404, detail="Local worker package not found.")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.write(worker_py, arcname="local_worker.py")
+        zf.write(worker_req, arcname="local_worker_requirements.txt")
+        zf.writestr(
+            "README.txt",
+            "Local ML Worker\n\n"
+            "1) Install deps: pip install -r local_worker_requirements.txt\n"
+            "2) Run: python local_worker.py --server <BACKEND_URL> --token <PAIR_TOKEN>\n",
+        )
+    buf.seek(0)
+    headers = {"Content-Disposition": 'attachment; filename="local_ml_worker.zip"'}
+    return StreamingResponse(buf, media_type="application/zip", headers=headers)
+
+
+@app.post("/worker/exec")
+async def worker_exec(payload: dict):
+    token = payload.get("auth_token")
+    email = _require_auth_token(token).lower()
+    command = (payload.get("command") or "").strip()
+    cwd = (payload.get("cwd") or "").strip()
+    detach = bool(payload.get("detach"))
+    if cwd:
+        cwd = os.path.abspath(cwd)
+        if not os.path.isdir(cwd):
+            raise HTTPException(status_code=400, detail="cwd must be an existing directory.")
+    timeout_s = payload.get("timeout_s") or 300
+    if not command:
+        raise HTTPException(status_code=400, detail="command required.")
+    ws = _worker_sessions.get(email)
+    if not ws:
+        raise HTTPException(status_code=409, detail="Local worker not connected.")
+    job_id = uuid.uuid4().hex
+    loop = asyncio.get_running_loop()
+    fut = loop.create_future()
+    _worker_pending[job_id] = {"future": fut, "email": email}
+    await ws.send_text(json.dumps({
+        "type": "exec",
+        "job_id": job_id,
+        "command": command,
+        "cwd": cwd,
+        "detach": detach,
+    }))
+    try:
+        result = await asyncio.wait_for(fut, timeout=float(timeout_s))
+    except asyncio.TimeoutError:
+        _worker_pending.pop(job_id, None)
+        raise HTTPException(status_code=504, detail="Local worker timed out.")
+    return {"status": "ok", "result": result}
+
+
+@app.post("/worker/write_file")
+async def worker_write_file(payload: dict):
+    token = payload.get("auth_token")
+    email = _require_auth_token(token).lower()
+    rel_path = (payload.get("path") or "").strip()
+    content_b64 = (payload.get("content_b64") or "").strip()
+    cwd = (payload.get("cwd") or "").strip()
+    timeout_s = payload.get("timeout_s") or 120
+    if cwd:
+        cwd = os.path.abspath(cwd)
+        if not os.path.isdir(cwd):
+            raise HTTPException(status_code=400, detail="cwd must be an existing directory.")
+    if not rel_path:
+        raise HTTPException(status_code=400, detail="path required.")
+    if not content_b64:
+        raise HTTPException(status_code=400, detail="content_b64 required.")
+    ws = _worker_sessions.get(email)
+    if not ws:
+        raise HTTPException(status_code=409, detail="Local worker not connected.")
+    job_id = uuid.uuid4().hex
+    loop = asyncio.get_running_loop()
+    fut = loop.create_future()
+    _worker_pending[job_id] = {"future": fut, "email": email}
+    await ws.send_text(json.dumps({
+        "type": "write_file",
+        "job_id": job_id,
+        "path": rel_path,
+        "content_b64": content_b64,
+        "cwd": cwd,
+    }))
+    try:
+        result = await asyncio.wait_for(fut, timeout=float(timeout_s))
+    except asyncio.TimeoutError:
+        _worker_pending.pop(job_id, None)
+        raise HTTPException(status_code=504, detail="Local worker timed out.")
+    return {"status": "ok", "result": result}
 
 
 @app.post("/open_project")
@@ -209,23 +330,32 @@ async def read_file(payload: dict):
 
 
 @app.post("/project_zip")
-async def download_project_zip(payload: dict):
+async def download_project_zip(request: Request):
+    content_type = (request.headers.get("content-type") or "").lower()
+    if "application/json" in content_type:
+        payload = await request.json()
+    else:
+        form = await request.form()
+        payload = dict(form)
     token = payload.get("auth_token")
     email = _require_auth_token(token)
-    if not workspace.is_initialized or not workspace.project_root:
-        raise HTTPException(status_code=400, detail="Project not initialized.")
-    _assert_project_owner(email)
+    base = _resolve_authorized_project(payload, email)
     buf = io.BytesIO()
-    base = workspace.project_root
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for rel in workspace.list_files():
-            full = base / rel
-            if full.is_file():
-                zf.write(full, arcname=rel.replace("\\", "/"))
-    buf.seek(0)
-    filename = f"{workspace.project_name or 'project'}.zip"
+        for full in base.rglob("*"):
+            if not full.is_file():
+                continue
+            rel = full.relative_to(base)
+            if any(part.startswith(".") for part in rel.parts):
+                continue
+            try:
+                zf.write(full, arcname=str(rel).replace("\\", "/"))
+            except Exception:
+                continue
+    zip_bytes = buf.getvalue()
+    filename = f"{base.name or 'project'}.zip"
     headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
-    return StreamingResponse(buf, media_type="application/zip", headers=headers)
+    return Response(content=zip_bytes, media_type="application/zip", headers=headers)
 
 
 @app.post("/projects")
@@ -298,11 +428,15 @@ async def select_project(payload: dict):
     }
 
 connected_clients: Set[WebSocket] = set()
+_ws_users: dict[WebSocket, str] = {}
 _recent_user_messages: dict[tuple[str, str], float] = {}
 _recent_bus_messages: dict[tuple, float] = {}
 _active_tokens: dict[str, str] = {}
 _tokens_loaded = False
 _active_project_owner: str | None = None
+_pair_tokens: dict[str, dict] = {}
+_worker_sessions: dict[str, WebSocket] = {}
+_worker_pending: dict[str, dict] = {}
 
 
 def _ensure_platform_root() -> Path:
@@ -346,6 +480,33 @@ def _save_tokens() -> None:
         path.write_text(json.dumps(_active_tokens, indent=2), encoding="utf-8")
     except Exception:
         pass
+
+
+def _prune_pair_tokens(now_ts: float | None = None) -> None:
+    now_ts = now_ts or time.time()
+    expired = [k for k, v in _pair_tokens.items() if v.get("expires_at", 0) <= now_ts]
+    for k in expired:
+        _pair_tokens.pop(k, None)
+
+
+def _issue_pair_token(email: str, ttl_s: int = 900) -> str:
+    _prune_pair_tokens()
+    token = uuid.uuid4().hex
+    _pair_tokens[token] = {
+        "email": email.lower(),
+        "expires_at": time.time() + ttl_s,
+    }
+    return token
+
+
+def _consume_pair_token(token: str) -> str | None:
+    _prune_pair_tokens()
+    data = _pair_tokens.pop(token, None)
+    if not data:
+        return None
+    if data.get("expires_at", 0) < time.time():
+        return None
+    return data.get("email")
 
 
 def _dedup_bus_message(key: tuple, window_s: float = 1.5) -> bool:
@@ -430,6 +591,33 @@ def _assert_project_owner(email: str) -> None:
     owner = _get_project_owner(workspace.project_root)
     if owner and owner != email.lower():
         raise HTTPException(status_code=403, detail="Forbidden.")
+
+
+def _resolve_authorized_project(payload: dict, email: str) -> Path:
+    base = _ensure_platform_root().resolve()
+    project_id = (payload.get("project_id") or "").strip()
+    project_root_raw = (payload.get("project_root") or "").strip()
+
+    if project_id:
+        project_root = (base / project_id).resolve()
+    elif project_root_raw:
+        project_root = Path(project_root_raw).resolve()
+    elif workspace.is_initialized and workspace.project_root:
+        project_root = workspace.project_root.resolve()
+    else:
+        raise HTTPException(status_code=400, detail="Project not initialized.")
+
+    if not project_root.exists() or not project_root.is_dir():
+        raise HTTPException(status_code=404, detail="Project not found.")
+    if project_root != base and base not in project_root.parents:
+        raise HTTPException(status_code=400, detail="Invalid project path.")
+
+    owner = _get_project_owner(project_root)
+    if not owner:
+        owner = _maybe_claim_legacy_project(project_root, email)
+    if owner and owner != email.lower():
+        raise HTTPException(status_code=403, detail="Forbidden.")
+    return project_root
 
 
 def _run_transparency_for_dataset_sync(dataset_path: Path, output_path: Path) -> None:
@@ -577,14 +765,21 @@ async def _process_dataset_background(dataset_path: Path) -> None:
 async def broadcast_to_gui(message: dict) -> None:
     if not connected_clients:
         return
+    user_scope = (message.get("user_email") or "").strip().lower()
     payload = json.dumps({**message, "timestamp": datetime.utcnow().isoformat()})
     dead = set()
     for ws in connected_clients:
+        if user_scope:
+            ws_user = _ws_users.get(ws, "").lower()
+            if ws_user != user_scope:
+                continue
         try:
             await ws.send_text(payload)
         except Exception:
             dead.add(ws)
     connected_clients.difference_update(dead)
+    for ws in dead:
+        _ws_users.pop(ws, None)
 
 
 # ─── Bus listeners (each runs exactly once) ───────────────────────────────────
@@ -670,6 +865,7 @@ async def _listen_agent_status() -> None:
             "content": p.get("status"),
             "tag":     None,
             "task_id": None,
+            "user_email": _active_project_owner or "",
         })
 
 
@@ -1023,7 +1219,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 continue
 
             try:
-                _require_auth(msg)
+                email = _require_auth(msg)
+                _ws_users[websocket] = email.lower()
             except HTTPException:
                 await broadcast_to_gui({
                     "type": "team_message",
@@ -1049,15 +1246,86 @@ async def websocket_endpoint(websocket: WebSocket):
                 to_agent=target,
                 content=content,
                 task_id=task_id,
+                extra={
+                    "auth_token": msg.get("auth_token"),
+                    "user_email": email,
+                    "worker_project_path": msg.get("worker_project_path") or "",
+                },
             )
 
     except WebSocketDisconnect:
         connected_clients.discard(websocket)
+        _ws_users.pop(websocket, None)
         print(f"[SERVER] GUI disconnected. Remaining: {len(connected_clients)}")
     except Exception as e:
         connected_clients.discard(websocket)
+        _ws_users.pop(websocket, None)
         print(f"[SERVER] WebSocket error: {e}")
 
+
+# ── Local worker WebSocket ──────────────────────────────────────────────────
+
+@app.websocket("/worker")
+async def worker_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    worker_email = None
+    try:
+        raw = await websocket.receive_text()
+        try:
+            msg = json.loads(raw)
+        except json.JSONDecodeError:
+            await websocket.close(code=4000)
+            return
+        if msg.get("type") != "pair":
+            await websocket.close(code=4001)
+            return
+        pair_token = (msg.get("token") or "").strip()
+        worker_email = _consume_pair_token(pair_token)
+        if not worker_email:
+            await websocket.send_text(json.dumps({"type": "error", "message": "Invalid or expired token"}))
+            await websocket.close(code=4003)
+            return
+        _worker_sessions[worker_email] = websocket
+        await websocket.send_text(json.dumps({"type": "paired", "email": worker_email}))
+        while True:
+            raw = await websocket.receive_text()
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if msg.get("type") == "result":
+                job_id = msg.get("job_id")
+                payload = msg.get("payload") or {}
+                pending = _worker_pending.pop(job_id, None)
+                if pending and not pending["future"].done():
+                    pending["future"].set_result(payload)
+            elif msg.get("type") == "log":
+                content = msg.get("content") or ""
+                if content:
+                    await broadcast_to_gui({
+                        "type": "team_message",
+                        "from": "ml_engineer",
+                        "to": "team",
+                        "content": content,
+                        "tag": "STATUS",
+                        "task_id": None,
+                    })
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        if worker_email and _worker_sessions.get(worker_email) is websocket:
+            _worker_sessions.pop(worker_email, None)
+        to_fail = [jid for jid, meta in _worker_pending.items() if meta.get("email") == worker_email]
+        for jid in to_fail:
+            meta = _worker_pending.pop(jid, None)
+            if meta and not meta["future"].done():
+                meta["future"].set_result({
+                    "returncode": 1,
+                    "stdout": "",
+                    "stderr": "Local worker disconnected.",
+                })
 
 # ─── REST ─────────────────────────────────────────────────────────────────────
 
