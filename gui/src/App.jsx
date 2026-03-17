@@ -56,6 +56,7 @@ function GettingStartedCard({ compact = false }) {
     "Ask for “train model” when analysis completes",
     "Use Access Files to view or download outputs",
     "Example after training: “Show training process for XGB on engineered dataset”",
+    "Optional: click “Get ML Engineer” to run models locally on your machine",
   ];
   return (
     <div style={{ padding: compact ? "10px 12px" : "14px 16px", borderRadius: 10, background: "#090909", border: "1px solid #141414" }}>
@@ -398,6 +399,7 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState("");
   const [showFilesPanel, setShowFilesPanel] = useState(false);
+  const [showMLWorkerHelp, setShowMLWorkerHelp] = useState(false);
   const [filesIndex, setFilesIndex] = useState([]);
   const [filesLoading, setFilesLoading] = useState(false);
   const [filesError, setFilesError] = useState("");
@@ -1265,6 +1267,14 @@ export default function App() {
               Connect GitHub
             </button>
           )}
+          {backendLive && (
+            <button
+              onClick={() => setShowMLWorkerHelp(true)}
+              style={{ fontSize: 10, padding: "6px 10px", borderRadius: 6, background: "#0b0b0b", border: "1px solid #1a1a1a", color: "#9ca3af", cursor: "pointer" }}
+            >
+              Get ML Engineer
+            </button>
+          )}
           {backendLive && projectRoot && (
             <button
               onClick={handleOpenFilesPanel}
@@ -1381,6 +1391,43 @@ export default function App() {
                     </pre>
                   </div>
                 )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showMLWorkerHelp && (
+        <div style={S.filesOverlay}>
+          <div style={{ ...S.filesPanel, width: "720px", height: "auto", maxHeight: "80vh" }}>
+            <div style={S.filesHeader}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#e8e8f0" }}>Get ML Engineer (Local Worker)</div>
+                <div style={{ fontSize: 10, color: "#3a3a3a" }}>
+                  Enables ML Engineer to use your local terminal and deploy trained models on your machine.
+                </div>
+              </div>
+              <button
+                onClick={() => setShowMLWorkerHelp(false)}
+                style={{ fontSize: 10, padding: "6px 10px", borderRadius: 6, background: "#120606", border: "1px solid #3a1414", color: "#fca5a5", cursor: "pointer" }}
+              >
+                Close
+              </button>
+            </div>
+            <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
+              <div style={{ fontSize: 12, color: "#9ca3af", lineHeight: 1.6 }}>
+                The local worker runs on your computer and connects back to the platform. This is required if you want
+                ML Engineer to execute commands and deploy models locally.
+              </div>
+              <div style={{ fontSize: 12, color: "#c8c8d0", lineHeight: 1.8, background: "#0b0b0b", border: "1px solid #151515", borderRadius: 8, padding: 12 }}>
+                <div style={{ fontWeight: 700, marginBottom: 6, color: "#e8e8f0" }}>How to start</div>
+                <div>1. Download the Local ML Worker (provided by your admin).</div>
+                <div>2. Run it and enter the pairing token from this platform.</div>
+                <div>3. Keep it running in the background.</div>
+                <div>4. Ask: “deploy the trained model locally” or “start the model server”.</div>
+              </div>
+              <div style={{ fontSize: 11, color: "#4b5563" }}>
+                Note: This does not run automatically. A user action is required to download and launch the worker.
               </div>
             </div>
           </div>
