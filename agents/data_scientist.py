@@ -3,6 +3,7 @@ from pathlib import Path
 import os
 import hashlib
 import re
+import json
 
 import pandas as pd
 
@@ -40,15 +41,23 @@ class DataScientistAgent(BaseAgent):
         block = "\n".join(lines[start:end]).strip()
         return block or "[Class Imbalance section not found in output]"
 
-    def _build_fe_runner_code(self, dataset_path: Path) -> str:
+    def _build_fe_runner_code(self, dataset_path: Path, target_col: str | None = None) -> str:
         ds = str(dataset_path).replace("\\", "\\\\")
+        requested_target = json.dumps(target_col)
         return f'''import os
 import pandas as pd
 from fe_1 import run, identify_target_column
 
 df = pd.read_csv(r"{ds}")
-target_col = identify_target_column(df, r"{ds}")
+requested_target = {requested_target}
+if requested_target and requested_target in df.columns:
+    target_col = requested_target
+else:
+    if requested_target:
+        print("TARGET_COL_WARNING:", requested_target, "not found; auto-detecting instead")
+    target_col = identify_target_column(df, r"{ds}")
 run(csv_path=r"{ds}", target_col=target_col)
+print("TARGET_COL:", target_col)
 print("ENGINEERED_BASE:", os.path.splitext(os.path.basename(r"{ds}"))[0])
 '''
 
@@ -161,6 +170,7 @@ print("ENGINEERED_BASE:", os.path.splitext(os.path.basename(r"{ds}"))[0])
         content = payload.get("content", "")
         task_id = payload.get("task_id")
         c = content.lower()
+        target_col = (payload.get("target_col") or "").strip() or None
 
         marker = "__PROBE_OUTPUT_BEGIN__"
         if marker in content:
@@ -215,7 +225,7 @@ print("ENGINEERED_BASE:", os.path.splitext(os.path.basename(r"{ds}"))[0])
                 return None
 
             # Step 1: Run feature engineering pipeline (fe_1.py)
-            fe_code = self._build_fe_runner_code(ds_path)
+            fe_code = self._build_fe_runner_code(ds_path, target_col)
 
             await self.report(
                 "Data Scientist feature engineering started in Jupyter kernel.\n",

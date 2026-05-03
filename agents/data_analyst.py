@@ -2,6 +2,7 @@ from pathlib import Path
 import re
 import json
 import io
+import math
 #
 import pandas as pd
 
@@ -64,10 +65,11 @@ class DataAnalystAgent(BaseAgent):
                     pass
         return target, features
 
-    def _build_da_code(self, dataset_path: Path) -> str:
+    def _build_da_code(self, dataset_path: Path, target_col: str | None = None) -> str:
         tpl = Path("tools/da_pipeline_template.py").read_text(encoding="utf-8")
         ds = str(dataset_path).replace("\\", "\\\\")
-        return tpl.replace("__DATA_PATH__", ds)
+        code = tpl.replace("__DATA_PATH__", ds)
+        return code.replace("__TARGET_COL__", json.dumps(target_col))
 
     def _find_latest_raw_dataset(self) -> Path | None:
         if not workspace.is_initialized or not workspace.project_root:
@@ -111,6 +113,9 @@ class DataAnalystAgent(BaseAgent):
         dup = payload.get("duplicate_analysis", {})
         out = payload.get("outlier_analysis", {})
         corr = payload.get("correlation_analysis", {})
+        partial_corr = payload.get("partial_correlation_analysis", {})
+        vif = payload.get("vif_analysis", {})
+        bayes = payload.get("bayesian_network_analysis", {})
         chi = payload.get("chi_square_tests", [])
         anomalies = payload.get("anomaly_flags", [])
         string_quality = payload.get("string_quality", {})
@@ -119,6 +124,9 @@ class DataAnalystAgent(BaseAgent):
             key=lambda x: x[1], reverse=True
         )[:5]
         top_corr = corr.get("top_pairs", [])[:5] if isinstance(corr, dict) else []
+        top_partial = partial_corr.get("top_pairs", [])[:5] if isinstance(partial_corr, dict) else []
+        all_vif = vif.get("vif_per_feature", []) if isinstance(vif, dict) else []
+        bayes_edges = bayes.get("edges", [])[:5] if isinstance(bayes, dict) else []
         miss_cols = []
         per_col = miss.get("per_column", {})
         if isinstance(per_col, dict):
@@ -131,6 +139,7 @@ class DataAnalystAgent(BaseAgent):
             "DATA ANALYST FINDINGS",
             "=" * 40,
             f"Rows: {ov.get('n_rows')} | Columns: {ov.get('n_cols')}",
+            f"Target column: {ov.get('target_col') or 'unknown'} ({ov.get('target_source') or 'unknown'})",
             f"Numeric cols: {len(ov.get('numeric_cols', []))} | Categorical cols: {len(ov.get('categorical_cols', []))}",
             f"Missing cells: {miss.get('total_missing_pct', 0)}% | Columns affected: {miss.get('cols_with_missing', 0)}",
             f"Duplicate rows: {dup.get('duplicate_rows', 0)} ({dup.get('duplicate_rows_pct', 0)}%)",
@@ -156,6 +165,32 @@ class DataAnalystAgent(BaseAgent):
             for p in top_corr:
                 lines.append(
                     f"- {p.get('col1')} vs {p.get('col2')}: r={p.get('pearson_r')} ({p.get('strength')})"
+                )
+        else:
+            lines.append("- None")
+        lines.append("")
+        lines.append("Top partial correlations:")
+        if top_partial:
+            for p in top_partial:
+                lines.append(
+                    f"- {p.get('col1')} vs {p.get('col2')}: partial r={p.get('partial_r')} ({p.get('strength')})"
+                )
+        else:
+            lines.append("- None")
+        lines.append("")
+        lines.append("VIF screening:")
+        if all_vif:
+            for row in all_vif:
+                lines.append(f"- {row.get('feature')}: VIF={row.get('vif')}")
+        else:
+            lines.append("- None")
+        lines.append("")
+        lines.append("Bayesian network candidate edges:")
+        if bayes_edges:
+            for edge in bayes_edges:
+                lines.append(
+                    f"- {edge.get('source')} -> {edge.get('target')}: "
+                    f"MI={edge.get('mutual_information')}, BIC gain={edge.get('bic_gain')}"
                 )
         else:
             lines.append("- None")
@@ -250,6 +285,18 @@ class DataAnalystAgent(BaseAgent):
                 "Purpose: quantifies linear relationships between numeric features. "
                 "How to read: top_pairs highlight strong associations; large absolute r indicates potentially redundant features or strong drivers."
             ),
+            "partial_correlation_analysis": (
+                "Purpose: estimates direct numeric relationships after controlling for the other selected numeric variables. "
+                "How to read: strong partial_r values indicate associations that remain after adjusting for confounders."
+            ),
+            "vif_analysis": (
+                "Purpose: screens numeric predictors for multicollinearity before formal regression modeling. "
+                "How to read: VIF values above 10 suggest unstable linear-model coefficients and overlapping predictors."
+            ),
+            "bayesian_network_analysis": (
+                "Purpose: proposes an exploratory directed dependency graph across numeric variables using a score-based Bayesian-network search. "
+                "How to read: edges are directional candidates for discussion only, not proof of causality."
+            ),
             "chi_square_tests": (
                 "Purpose: tests statistical association between categorical variables. "
                 "How to read: significant p-values plus higher Cramer's V indicate meaningful relationships between categories."
@@ -296,6 +343,9 @@ class DataAnalystAgent(BaseAgent):
             "anomaly_flags",
             "string_quality",
             "correlation_analysis",
+            "partial_correlation_analysis",
+            "vif_analysis",
+            "bayesian_network_analysis",
             "chi_square_tests",
             "categorical_frequencies",
             "time_series_trends",
@@ -332,6 +382,86 @@ class DataAnalystAgent(BaseAgent):
         if workspace.is_initialized:
             workspace.write_bytes("data_analyst", filename, buf.read(), task_id)
 
+    def _write_network_graph(
+        self,
+        plt,
+        edges: list[dict],
+        filename: str,
+        title: str,
+        task_id: str | None,
+        directed: bool = False,
+    ) -> bool:
+        if not edges:
+            return False
+        nodes = []
+        for edge in edges:
+            src = edge.get("source") or edge.get("col1")
+            dst = edge.get("target") or edge.get("col2")
+            if src and src not in nodes:
+                nodes.append(src)
+            if dst and dst not in nodes:
+                nodes.append(dst)
+        if len(nodes) < 2:
+            return False
+
+        positions = {}
+        total = len(nodes)
+        for idx, node in enumerate(nodes):
+            angle = (2 * math.pi * idx) / max(total, 1)
+            positions[node] = (math.cos(angle), math.sin(angle))
+
+        fig = plt.figure(figsize=(6.8, 6))
+        ax = plt.gca()
+        ax.set_title(title)
+        ax.set_xlim(-1.35, 1.35)
+        ax.set_ylim(-1.35, 1.35)
+        ax.axis("off")
+
+        for edge in edges[:12]:
+            src = edge.get("source") or edge.get("col1")
+            dst = edge.get("target") or edge.get("col2")
+            if src not in positions or dst not in positions:
+                continue
+            x1, y1 = positions[src]
+            x2, y2 = positions[dst]
+            label_val = next(
+                (
+                    edge.get(key)
+                    for key in ("bic_gain", "mutual_information", "partial_r", "pearson_r")
+                    if edge.get(key) is not None
+                ),
+                None,
+            )
+            if directed:
+                ax.annotate(
+                    "",
+                    xy=(x2 * 0.9, y2 * 0.9),
+                    xytext=(x1 * 0.9, y1 * 0.9),
+                    arrowprops={"arrowstyle": "->", "lw": 1.8, "color": "#2563eb", "alpha": 0.8},
+                )
+            else:
+                ax.plot([x1, x2], [y1, y2], color="#2563eb", linewidth=1.8, alpha=0.7)
+            if label_val is not None:
+                ax.text(
+                    (x1 + x2) / 2,
+                    (y1 + y2) / 2,
+                    f"{label_val}",
+                    fontsize=7,
+                    color="#1f2937",
+                    ha="center",
+                    va="center",
+                    bbox={"boxstyle": "round,pad=0.15", "fc": "white", "ec": "none", "alpha": 0.8},
+                )
+
+        for node, (x, y) in positions.items():
+            ax.scatter([x], [y], s=900, color="#f59e0b", edgecolors="#1f2937", linewidths=1.2, zorder=3)
+            ax.text(x, y, node, ha="center", va="center", fontsize=8, color="#111827", zorder=4)
+
+        plt.tight_layout()
+        self._write_graph_bytes(fig, filename, task_id)
+        plt.close(fig)
+        return True
+
     def _write_da_graphs(self, dataset_path: Path, payload: dict, task_id: str | None) -> list[str]:
         try:
             import matplotlib
@@ -343,6 +473,10 @@ class DataAnalystAgent(BaseAgent):
         df = pd.read_csv(dataset_path)
         numeric_cols = payload.get("overview", {}).get("numeric_cols", []) if payload else []
         cat_cols = payload.get("overview", {}).get("categorical_cols", []) if payload else []
+        corr_payload = payload.get("correlation_analysis", {}) if payload else {}
+        partial_payload = payload.get("partial_correlation_analysis", {}) if payload else {}
+        vif_payload = payload.get("vif_analysis", {}) if payload else {}
+        bayes_payload = payload.get("bayesian_network_analysis", {}) if payload else {}
         saved = []
 
         miss = payload.get("missing_value_analysis", {}).get("per_column", {}) if payload else {}
@@ -372,6 +506,74 @@ class DataAnalystAgent(BaseAgent):
             self._write_graph_bytes(fig, name, task_id)
             plt.close(fig)
             saved.append(name)
+
+        partial_matrix = partial_payload.get("matrix", {}) if isinstance(partial_payload, dict) else {}
+        if partial_matrix:
+            cols = list(partial_matrix.keys())
+            matrix = [
+                [
+                    partial_matrix.get(c1, {}).get(c2)
+                    if partial_matrix.get(c1, {}).get(c2) is not None
+                    else float("nan")
+                    for c2 in cols
+                ]
+                for c1 in cols
+            ]
+            fig = plt.figure(figsize=(6, 5))
+            plt.imshow(matrix, cmap="coolwarm", vmin=-1, vmax=1)
+            plt.colorbar(fraction=0.046, pad=0.04)
+            plt.title("Partial Correlation (Controlled)")
+            plt.xticks(range(len(cols)), cols, rotation=90, fontsize=6)
+            plt.yticks(range(len(cols)), cols, fontsize=6)
+            plt.tight_layout()
+            name = "graphs/partial_correlation.png"
+            self._write_graph_bytes(fig, name, task_id)
+            plt.close(fig)
+            saved.append(name)
+
+        vif_rows = vif_payload.get("vif_per_feature", []) if isinstance(vif_payload, dict) else []
+        plot_vif_rows = []
+        for row in vif_rows:
+            vif_value = row.get("vif")
+            if isinstance(vif_value, (int, float)):
+                plot_vif_rows.append({"feature": row.get("feature", ""), "vif": float(vif_value)})
+        if plot_vif_rows:
+            fig = plt.figure(figsize=(7, max(3.5, 0.45 * len(plot_vif_rows) + 1.2)))
+            names = [row["feature"] for row in reversed(plot_vif_rows)]
+            values = [row["vif"] for row in reversed(plot_vif_rows)]
+            plt.barh(names, values, color="#ef4444")
+            plt.axvline(x=10, color="#111827", linestyle="--", linewidth=1.2, label="VIF=10 threshold")
+            plt.title("VIF Scores (Multicollinearity Check)")
+            plt.legend()
+            plt.tight_layout()
+            name = "graphs/vif_scores.png"
+            self._write_graph_bytes(fig, name, task_id)
+            plt.close(fig)
+            saved.append(name)
+
+        corr_edges = []
+        if isinstance(corr_payload, dict):
+            corr_edges = (corr_payload.get("strong_pairs") or corr_payload.get("top_pairs") or [])[:10]
+        if self._write_network_graph(
+            plt,
+            corr_edges,
+            "graphs/correlation_network.png",
+            "Correlation Network",
+            task_id,
+            directed=False,
+        ):
+            saved.append("graphs/correlation_network.png")
+
+        bayes_edges = bayes_payload.get("edges", [])[:10] if isinstance(bayes_payload, dict) else []
+        if self._write_network_graph(
+            plt,
+            bayes_edges,
+            "graphs/bayesian_network.png",
+            "Bayesian Network Candidate",
+            task_id,
+            directed=True,
+        ):
+            saved.append("graphs/bayesian_network.png")
 
         for col in numeric_cols[:6]:
             fig = plt.figure(figsize=(5, 3.2))
@@ -458,6 +660,7 @@ class DataAnalystAgent(BaseAgent):
         content = payload.get("content", "")
         task_id = payload.get("task_id")
         c = content.lower()
+        target_col = (payload.get("target_col") or "").strip() or None
 
         marker = "__PROBE_OUTPUT_BEGIN__"
         if marker in content:
@@ -476,7 +679,7 @@ class DataAnalystAgent(BaseAgent):
                 )
                 return None
 
-            code = self._build_da_code(ds_path)
+            code = self._build_da_code(ds_path, target_col)
 
             await self.report(
                 "Data Analyst analysis started in Jupyter kernel.\n"

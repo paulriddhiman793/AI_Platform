@@ -146,6 +146,8 @@ class OrchestratorAgent(BaseAgent):
             extra["auth_token"] = task.get("auth_token")
         if task.get("worker_project_path"):
             extra["worker_project_path"] = task.get("worker_project_path")
+        if task.get("target_col"):
+            extra["target_col"] = task.get("target_col")
 
         if phase == "data_review":
             task["expected"] = {"data_scientist", "data_analyst"}
@@ -186,6 +188,7 @@ class OrchestratorAgent(BaseAgent):
         from_agent = payload.get("from", "user")
         auth_token = (payload.get("auth_token") or "").strip()
         worker_project_path = (payload.get("worker_project_path") or "").strip()
+        target_col = (payload.get("target_col") or "").strip()
 
         if from_agent != "user" and task_id not in self._active_tasks:
             return None
@@ -233,12 +236,17 @@ class OrchestratorAgent(BaseAgent):
                     "results": [],
                     "auth_token": auth_token,
                     "worker_project_path": worker_project_path,
+                    "target_col": target_col,
                 }
             await self.report(
                 "Training-process request received. Assigning: ML Engineer.",
                 task_id,
             )
-            extra = {"auth_token": auth_token, "worker_project_path": worker_project_path} if auth_token else {"worker_project_path": worker_project_path}
+            extra = {"worker_project_path": worker_project_path}
+            if auth_token:
+                extra["auth_token"] = auth_token
+            if target_col:
+                extra["target_col"] = target_col
             await self.message("ml_engineer", content, task_id, extra=extra)
             return None
 
@@ -251,9 +259,14 @@ class OrchestratorAgent(BaseAgent):
                     "results": [],
                     "auth_token": auth_token,
                     "worker_project_path": worker_project_path,
+                    "target_col": target_col,
                 }
             await self.report("Local deploy request received. Assigning: ML Engineer.", task_id)
-            extra = {"auth_token": auth_token, "worker_project_path": worker_project_path} if auth_token else {"worker_project_path": worker_project_path}
+            extra = {"worker_project_path": worker_project_path}
+            if auth_token:
+                extra["auth_token"] = auth_token
+            if target_col:
+                extra["target_col"] = target_col
             await self.message("ml_engineer", content, task_id, extra=extra)
             return None
 
@@ -268,6 +281,7 @@ class OrchestratorAgent(BaseAgent):
                     "results": [],
                     "auth_token": auth_token,
                     "worker_project_path": worker_project_path,
+                    "target_col": target_col,
                 }
                 if phase == "ml_build":
                     await self.report(
@@ -285,11 +299,17 @@ class OrchestratorAgent(BaseAgent):
                 "agents_assigned": agents,
                 "results": [],
                 "auth_token": auth_token,
+                "worker_project_path": worker_project_path,
+                "target_col": target_col,
             }
 
         agent_names = ", ".join(a.replace("_", " ").title() for a in agents)
         await self.report(f"Task received. Assigning: {agent_names}.", task_id)
-        extra = {"auth_token": auth_token, "worker_project_path": worker_project_path} if auth_token else {"worker_project_path": worker_project_path}
+        extra = {"worker_project_path": worker_project_path}
+        if auth_token:
+            extra["auth_token"] = auth_token
+        if target_col:
+            extra["target_col"] = target_col
         for agent_id in agents:
             await self.message(agent_id, content, task_id, extra=extra)
         return None

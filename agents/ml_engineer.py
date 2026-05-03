@@ -225,8 +225,8 @@ class MLEngineerAgent(BaseAgent):
 
         return "\n".join(lines)
 
-    async def _run_training_for_dataset(self, ds_path: Path, label: str, task_id: str | None) -> dict | None:
-        code = self._build_ml_optuna_code(Path(ds_path), label)
+    async def _run_training_for_dataset(self, ds_path: Path, label: str, task_id: str | None, target_col: str | None = None) -> dict | None:
+        code = self._build_ml_optuna_code(Path(ds_path), label, target_col)
         exec_result = await self.run_code_in_jupyter_kernel(code, timeout_s=1200)
         output = exec_result.get("output", "") or "[no output]"
         if workspace.is_initialized:
@@ -907,7 +907,7 @@ run_pipeline_from_df(
         return report, final_report
 
     # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    def _build_ml_optuna_code(self, dataset_path: "Path", label: str) -> str:
+    def _build_ml_optuna_code(self, dataset_path: "Path", label: str, target_col: str | None = None) -> str:
         """
         Generate the full v2 ML pipeline script as a string, with the dataset
         path injected.  The generated script includes:
@@ -929,6 +929,7 @@ run_pipeline_from_df(
           â€¢ All results + audit data saved to ml_results.json
         """
         ds = str(dataset_path).replace("\\", "\\\\")
+        target_line = f"target_col = {json.dumps(target_col)}" if target_col else "target_col = _infer_target(df)"
         return f'''"""
 Advanced ML Pipeline v2 â€” Leakage-Aware, Stability-Penalised, Diversity-Enforced
 ==================================================================================
@@ -1030,7 +1031,10 @@ log.info(f"Loading dataset: {{DATA_PATH}}")
 df = pd.read_csv(DATA_PATH)
 log.info(f"Shape: {{df.shape}}  |  Columns: {{list(df.columns)}}")
 
-target_col = _infer_target(df)
+{target_line}
+if target_col not in df.columns:
+    log.warning(f"Configured target '{{target_col}}' not found in dataset; falling back to auto-detection.")
+    target_col = _infer_target(df)
 y = df[target_col].copy()
 X = df.drop(columns=[target_col]).copy()
 
@@ -2009,6 +2013,7 @@ for k, v in null_rate.items():
         c = content.lower()
         auth_token = (payload.get("auth_token") or "").strip()
         worker_project_path = (payload.get("worker_project_path") or "").strip()
+        target_col = (payload.get("target_col") or "").strip() or None
 
         marker = "__PROBE_OUTPUT_BEGIN__"
         if marker in content:
@@ -2144,11 +2149,11 @@ for k, v in null_rate.items():
             raw_payload = None
             eng_payload = None
             if eng_path:
-                eng_payload = await self._run_training_for_dataset(Path(eng_path), "engineered", task_id)
+                eng_payload = await self._run_training_for_dataset(Path(eng_path), "engineered", task_id, target_col)
             else:
                 await self.report("Engineered dataset not found. Proceeding with raw dataset only.", task_id)
             if raw_path:
-                raw_payload = await self._run_training_for_dataset(Path(raw_path), "raw", task_id)
+                raw_payload = await self._run_training_for_dataset(Path(raw_path), "raw", task_id, target_col)
             else:
                 await self.report("Raw dataset not found. Proceeding with engineered dataset only.", task_id)
 

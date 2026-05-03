@@ -421,10 +421,12 @@ async def select_project(payload: dict):
     workspace.load_project(project_root)
     global _active_project_owner
     _active_project_owner = email.lower()
+    settings = _read_project_settings(project_root)
     return {
         "status": "ok",
         "project_name": workspace.project_name,
         "project_root": str(workspace.project_root),
+        "target_col": _normalize_target_col(settings.get("target_col")),
     }
 
 connected_clients: Set[WebSocket] = set()
@@ -523,6 +525,7 @@ def _dedup_bus_message(key: tuple, window_s: float = 1.5) -> bool:
 
 # ── Guard: listeners only ever start once ─────────────────────────────────────
 _listeners_started = False
+PROJECT_SETTINGS_FILE = "chat_settings.json"
 
 
 def _safe_dataset_name(name: str) -> str:
@@ -530,6 +533,37 @@ def _safe_dataset_name(name: str) -> str:
     raw = raw.replace("\\", "/").split("/")[-1]
     cleaned = re.sub(r"[^A-Za-z0-9._-]", "_", raw)
     return cleaned or "dataset.csv"
+
+
+def _normalize_target_col(value: str | None) -> str | None:
+    text = (value or "").strip()
+    if not text:
+        return None
+    return text[:200]
+
+
+def _project_settings_path(project_root: Path) -> Path:
+    return project_root / "shared" / PROJECT_SETTINGS_FILE
+
+
+def _read_project_settings(project_root: Path | None) -> dict:
+    if not project_root:
+        return {}
+    path = _project_settings_path(project_root)
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_project_settings(project_root: Path, settings: dict) -> dict:
+    path = _project_settings_path(project_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+    return settings
 
 
 def _require_auth(msg: dict) -> str:
@@ -894,6 +928,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
     # Send project info on connect
     if workspace.is_initialized:
+        settings = _read_project_settings(workspace.project_root)
         await websocket.send_text(json.dumps({
             "type":      "project_info",
             "from":      "server",
@@ -905,6 +940,7 @@ async def websocket_endpoint(websocket: WebSocket):
             "extra": {
                 "project_name": workspace.project_name,
                 "project_root": str(workspace.project_root),
+                "target_col": _normalize_target_col(settings.get("target_col")),
             },
         }))
         # Send a snapshot of existing files so the GUI can populate the Files panel.
@@ -1001,6 +1037,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         "extra": {
                             "project_name": workspace.project_name,
                             "project_root": str(project_root),
+                            "target_col": _normalize_target_col(_read_project_settings(project_root).get("target_col")),
                         },
                     })
                     try:
@@ -1211,6 +1248,40 @@ async def websocket_endpoint(websocket: WebSocket):
                 continue
 
             # ── User message → orchestrator ────────────────────────────────
+            if msg_type == "set_project_target":
+                try:
+                    email = _require_auth(msg)
+                    _ws_users[websocket] = email.lower()
+                    _assert_project_owner(email)
+                except HTTPException:
+                    continue
+                if not workspace.is_initialized or not workspace.project_root:
+                    continue
+                target_col = _normalize_target_col(msg.get("target_col"))
+                try:
+                    settings = _read_project_settings(workspace.project_root)
+                    if target_col:
+                        settings["target_col"] = target_col
+                    else:
+                        settings.pop("target_col", None)
+                    _write_project_settings(workspace.project_root, settings)
+                    await broadcast_to_gui({
+                        "type": "project_settings",
+                        "from": "server",
+                        "to": "gui",
+                        "content": "project_settings_updated",
+                        "tag": None,
+                        "task_id": msg.get("task_id"),
+                        "user_email": email.lower(),
+                        "extra": {
+                            "project_root": str(workspace.project_root),
+                            "target_col": _normalize_target_col(settings.get("target_col")),
+                        },
+                    })
+                except Exception:
+                    pass
+                continue
+
             content = msg.get("content", "").strip()
             to      = msg.get("to", "team")
             task_id = msg.get("task_id") or str(uuid.uuid4())[:8]
@@ -1233,7 +1304,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 continue
 
             # Guard against accidental duplicate sends from multiple GUI WS connections.
-            dedup_key = (to, content)
+            target_col = _normalize_target_col(msg.get("target_col"))
+            dedup_key = (to, content, target_col or "")
             now_ts = time.time()
             last_ts = _recent_user_messages.get(dedup_key, 0.0)
             if now_ts - last_ts < 1.2:
@@ -1250,6 +1322,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     "auth_token": msg.get("auth_token"),
                     "user_email": email,
                     "worker_project_path": msg.get("worker_project_path") or "",
+                    "target_col": target_col,
                 },
             )
 

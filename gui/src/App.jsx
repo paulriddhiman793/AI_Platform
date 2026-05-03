@@ -412,6 +412,8 @@ export default function App() {
   const [uploading, setUploading]       = useState(false);
   const [datasetReady, setDatasetReady] = useState(false);
   const [datasetInfo, setDatasetInfo]   = useState(null);
+  const [projectTargetColumn, setProjectTargetColumn] = useState("");
+  const [targetColumnDraft, setTargetColumnDraft] = useState("");
   const [projectInitBusy, setProjectInitBusy] = useState(false);
   const [showGithubConnect, setShowGithubConnect] = useState(false);
   const [githubToken, setGithubToken] = useState("");
@@ -549,6 +551,8 @@ export default function App() {
       setFileLog([]);
       setDatasetReady(false);
       setDatasetInfo(null);
+      setProjectTargetColumn("");
+      setTargetColumnDraft("");
       setAgents(Object.fromEntries(Object.entries(AGENTS).map(([k,v]) => [k, { ...v, status: "idle" }])));
       setWorkerToken("");
       setWorkerStatus("unknown");
@@ -583,6 +587,8 @@ export default function App() {
     setWorkerProjectPath("");
     setShowMLWorkerHelp(false);
     projectStateRef.current = {};
+    setProjectTargetColumn("");
+    setTargetColumnDraft("");
   }, []);
 
   useEffect(() => {
@@ -725,8 +731,9 @@ export default function App() {
       chatList,
       p2pLog,
       activeChat,
+      targetColumn: projectTargetColumn,
     });
-  }, [projectRoot, authEmail, chatList, p2pLog, activeChat, saveProjectStateToStorage]);
+  }, [projectRoot, authEmail, chatList, p2pLog, activeChat, projectTargetColumn, saveProjectStateToStorage]);
 
   const switchToProjectState = useCallback((next) => {
     if (projectRoot) {
@@ -734,6 +741,7 @@ export default function App() {
         chatList,
         p2pLog,
         activeChat,
+        targetColumn: projectTargetColumn,
       };
       projectStateRef.current[projectRoot] = snapshot;
       saveProjectStateToStorage(projectRoot, snapshot);
@@ -746,6 +754,8 @@ export default function App() {
     setChatList(saved?.chatList || createInitialChatList());
     setP2pLog(saved?.p2pLog || []);
     setActiveChat(saved?.activeChat || "team");
+    setProjectTargetColumn(next?.target_col || saved?.targetColumn || "");
+    setTargetColumnDraft(next?.target_col || saved?.targetColumn || "");
     setProjectName(next?.project_name || null);
     setProjectRoot(next?.project_root || null);
     setDatasetReady(false);
@@ -754,7 +764,7 @@ export default function App() {
     groupMapRef.current = {};
     taskRouteRef.current = {};
     recentMsgRef.current = new Map();
-  }, [projectRoot, chatList, p2pLog, activeChat, loadProjectStateFromStorage, saveProjectStateToStorage]);
+  }, [projectRoot, chatList, p2pLog, activeChat, projectTargetColumn, loadProjectStateFromStorage, saveProjectStateToStorage]);
 
   // â”€â”€ Handle incoming backend messages â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleWsMessage = useCallback((msg) => {
@@ -778,11 +788,18 @@ export default function App() {
     };
 
     if (type === "project_info") {
-      switchToProjectState({ project_name: extra?.project_name, project_root: extra?.project_root });
+      switchToProjectState({ project_name: extra?.project_name, project_root: extra?.project_root, target_col: extra?.target_col || "" });
       setProjectInitBusy(false);
       pushMsg("team", "orchestrator",
         `Project: ${extra?.project_name}\nDIR ${extra?.project_root}`, "STATUS");
       fetchProjects();
+      return;
+    }
+
+    if (type === "project_settings") {
+      if (extra?.project_root && projectRoot && extra.project_root !== projectRoot) return;
+      setProjectTargetColumn(extra?.target_col || "");
+      setTargetColumnDraft(extra?.target_col || "");
       return;
     }
 
@@ -847,7 +864,7 @@ export default function App() {
         `Dataset uploaded: ${extra?.filename || "dataset"}\nDIR ${extra?.path || ""}`, "STATUS");
       return;
     }
-  }, [upsertFile, seedFile, getOrCreateGroupChat, switchToProjectState, fetchProjects]);
+  }, [upsertFile, seedFile, getOrCreateGroupChat, switchToProjectState, fetchProjects, projectRoot]);
 
   useEffect(() => {
     if (wsRef.current) {
@@ -976,6 +993,7 @@ export default function App() {
             task_id: taskId,
             auth_token: authToken,
             worker_project_path: workerProjectPath || "",
+            target_col: projectTargetColumn || "",
           }));
       } else {
         // Backend offline â€” run mock scenario (it handles everything locally)
@@ -1005,6 +1023,7 @@ export default function App() {
             task_id: taskId,
             auth_token: authToken,
             worker_project_path: workerProjectPath || "",
+            target_col: projectTargetColumn || "",
           }));
         return;
       }
@@ -1044,7 +1063,7 @@ export default function App() {
       }, 1500);
       timers.current.push(t1, t2);
     }
-  }, [inputs, chatList, isBusy, backendLive, addMsg, setAgentStatus, setTyping, runTeamScenario, spawnGroupChat, fireFileWrite, authToken]);
+  }, [inputs, chatList, isBusy, backendLive, addMsg, setAgentStatus, setTyping, runTeamScenario, spawnGroupChat, fireFileWrite, authToken, workerProjectPath, projectTargetColumn]);
 
   const handleDatasetUpload = useCallback(async (file) => {
     if (!file || !backendLive || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
@@ -1104,9 +1123,20 @@ export default function App() {
         to: "team",
         task_id: taskId,
         auth_token: authToken,
+        target_col: projectTargetColumn || "",
       }));
     setDatasetReady(false);
-  }, [backendLive, addMsg, authToken]);
+  }, [backendLive, addMsg, authToken, projectTargetColumn]);
+
+  const handleSaveTargetColumn = useCallback(() => {
+    if (!backendLive || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN || !projectRoot) return;
+    wsRef.current.send(JSON.stringify({
+      type: "set_project_target",
+      target_col: targetColumnDraft.trim(),
+      task_id: `target_${Date.now()}`,
+      auth_token: authToken,
+    }));
+  }, [backendLive, projectRoot, targetColumnDraft, authToken]);
 
   const handleGithubConnect = useCallback(() => {
     if (!backendLive || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
@@ -1275,7 +1305,7 @@ export default function App() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.detail || "Failed to switch project.");
-      switchToProjectState({ project_name: data.project_name, project_root: data.project_root });
+      switchToProjectState({ project_name: data.project_name, project_root: data.project_root, target_col: data.target_col || "" });
       fetchFilesIndex();
     } catch (err) {
       setFilesError(err?.message || String(err));
@@ -1775,6 +1805,70 @@ export default function App() {
                 if (f) handleDatasetUpload(f);
               }}
             />
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+              <div style={{ fontSize: 10, color: "#6b7280", minWidth: 120 }}>
+                Target column for this chat
+              </div>
+              <input
+                value={targetColumnDraft}
+                onChange={e => setTargetColumnDraft(e.target.value)}
+                placeholder="Optional: e.g. price"
+                style={{
+                  flex: 1,
+                  minWidth: 180,
+                  background: "#0b0b0b",
+                  border: "1px solid #1a1a1a",
+                  color: "#cbd5f5",
+                  borderRadius: 8,
+                  padding: "8px 10px",
+                  fontSize: 11,
+                }}
+              />
+              <button
+                onClick={handleSaveTargetColumn}
+                disabled={!backendLive || !projectRoot || targetColumnDraft.trim() === projectTargetColumn}
+                style={{
+                  fontSize: 10,
+                  padding: "8px 10px",
+                  borderRadius: 8,
+                  background: "#111827",
+                  border: "1px solid #374151",
+                  color: "#cbd5f5",
+                  cursor: "pointer",
+                  opacity: (!backendLive || !projectRoot || targetColumnDraft.trim() === projectTargetColumn) ? 0.4 : 1,
+                }}
+              >
+                Apply
+              </button>
+              <button
+                onClick={() => {
+                  setTargetColumnDraft("");
+                  if (!backendLive || !projectRoot || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+                  wsRef.current.send(JSON.stringify({
+                    type: "set_project_target",
+                    target_col: "",
+                    task_id: `target_${Date.now()}`,
+                    auth_token: authToken,
+                  }));
+                }}
+                disabled={!backendLive || !projectRoot || !projectTargetColumn}
+                style={{
+                  fontSize: 10,
+                  padding: "8px 10px",
+                  borderRadius: 8,
+                  background: "#0f172a",
+                  border: "1px solid #334155",
+                  color: "#93c5fd",
+                  cursor: "pointer",
+                  opacity: (!backendLive || !projectRoot || !projectTargetColumn) ? 0.4 : 1,
+                }}
+              >
+                Auto
+              </button>
+              <div style={{ fontSize: 9, color: "#374151" }}>
+                {projectTargetColumn ? `Using: ${projectTargetColumn}` : "Blank = auto-detect"}
+              </div>
+            </div>
             <div style={S.inputRow}>
               <button
                 onClick={() => uploadRef.current?.click()}

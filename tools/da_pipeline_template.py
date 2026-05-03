@@ -65,6 +65,14 @@ from pathlib import Path
 from datetime import datetime
 
 import scipy.stats as stats
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mutual_info_score
+
+try:
+    from model_transparency import infer_target_column
+    _HAS_TARGET_INFERENCE = True
+except Exception:
+    _HAS_TARGET_INFERENCE = False
 
 warnings.filterwarnings("ignore")
 
@@ -82,6 +90,7 @@ log = logging.getLogger(__name__)
 
 # ---- Config ----
 DATA_PATH           = r"__DATA_PATH__"
+TARGET_COL          = __TARGET_COL__
 OUTLIER_Z_THRESH    = 3.0
 HIGH_CARD_THR       = 20
 MAX_CAT_FREQ_SHOW   = 15
@@ -91,6 +100,12 @@ CORR_SIG_THRESH     = 0.05
 TOP_CORR_PAIRS      = 20
 DATETIME_SAMPLE_N   = 200
 DATETIME_HIT_RATE   = 0.80
+MAX_PARTIAL_VARS    = 12
+MAX_VIF_VARS        = 15
+MAX_BAYES_VARS      = 6
+BAYES_MAX_PARENTS   = 2
+BAYES_MIN_ROWS      = 40
+BAYES_BINS          = 4
 
 log.info(f"Loading dataset: {DATA_PATH}")
 df_raw = pd.read_csv(DATA_PATH)
@@ -136,8 +151,363 @@ def col_type_tag(series: pd.Series) -> str:
             return "mixed"
     return "categorical"
 
+
+def resolve_target_column(frame: pd.DataFrame, requested: str | None) -> tuple[str | None, str]:
+    if requested:
+        if requested in frame.columns:
+            return requested, "manual"
+        log.warning(f"Configured target '{requested}' not found in dataset; falling back to auto-detection.")
+    if _HAS_TARGET_INFERENCE:
+        try:
+            inferred, _, _, _ = infer_target_column(frame, verbose=False)
+            if inferred in frame.columns:
+                return inferred, "auto_inferred"
+        except Exception:
+            pass
+    return frame.columns[-1] if len(frame.columns) else None, "fallback_last_column"
+
+
+def relationship_strength(abs_r: float | None) -> str:
+    if abs_r is None:
+        return "unknown"
+    if abs_r >= 0.8:
+        return "very strong"
+    if abs_r >= 0.6:
+        return "strong"
+    if abs_r >= 0.4:
+        return "moderate"
+    if abs_r >= 0.2:
+        return "weak"
+    return "negligible"
+
+
+def select_numeric_analysis_cols(frame: pd.DataFrame, cols: list[str], max_cols: int) -> list[str]:
+    ranked = []
+    for col in cols:
+        s = pd.to_numeric(frame[col], errors="coerce")
+        non_null = int(s.notna().sum())
+        nunique = int(s.nunique(dropna=True))
+        if non_null < 25 or nunique < 3:
+            continue
+        ranked.append({
+            "col": col,
+            "non_null": non_null,
+            "variance": abs(safe_float(s.var()) or 0.0),
+        })
+    ranked.sort(key=lambda x: (x["non_null"], x["variance"]), reverse=True)
+    return [r["col"] for r in ranked[:max_cols]]
+
+
+def build_partial_correlation_analysis(frame: pd.DataFrame, cols: list[str]) -> dict:
+    selected = select_numeric_analysis_cols(frame, cols, MAX_PARTIAL_VARS)
+    result = {
+        "variables": selected,
+        "controls": "all other selected numeric variables",
+        "n_complete_rows": 0,
+        "matrix": {},
+        "top_pairs": [],
+        "strong_pairs": [],
+        "note": None,
+    }
+    if len(selected) < 3:
+        result["note"] = "Need at least 3 usable numeric variables for partial correlation."
+        return result
+
+    work = frame[selected].apply(pd.to_numeric, errors="coerce").dropna()
+    result["n_complete_rows"] = int(len(work))
+    if len(work) <= len(selected) + 2:
+        result["note"] = "Too few complete rows to estimate stable partial correlations."
+        return result
+
+    cov = work.cov().to_numpy(dtype=float)
+    try:
+        precision = np.linalg.pinv(cov)
+    except Exception as e:
+        result["note"] = f"Precision matrix inversion failed: {e}"
+        return result
+
+    matrix = np.eye(len(selected))
+    pairs = []
+    dfree = len(work) - len(selected)
+    for i, c1 in enumerate(selected):
+        for j, c2 in enumerate(selected):
+            if i == j:
+                matrix[i, j] = 1.0
+                continue
+            denom = precision[i, i] * precision[j, j]
+            if denom <= 0:
+                pcorr = None
+            else:
+                pcorr = safe_float(-precision[i, j] / np.sqrt(denom))
+            matrix[i, j] = pcorr if pcorr is not None else np.nan
+            if j <= i or pcorr is None:
+                continue
+            p_val = None
+            if dfree > 0 and abs(pcorr) < 1:
+                try:
+                    t_stat = pcorr * np.sqrt(dfree / max(1e-12, 1 - pcorr**2))
+                    p_val = safe_float(2 * (1 - stats.t.cdf(abs(t_stat), dfree)))
+                except Exception:
+                    p_val = None
+            pairs.append({
+                "col1": c1,
+                "col2": c2,
+                "partial_r": pcorr,
+                "abs_r": safe_float(abs(pcorr)),
+                "p_value": p_val,
+                "significant": bool(p_val < CORR_SIG_THRESH) if p_val is not None else None,
+                "strength": relationship_strength(abs(pcorr)),
+                "direction": "positive" if pcorr >= 0 else "negative",
+                "controls_used": [c for c in selected if c not in (c1, c2)],
+            })
+
+    pairs.sort(key=lambda x: x["abs_r"] or 0.0, reverse=True)
+    result["matrix"] = {
+        c1: {
+            c2: safe_float(matrix[i, j]) if not np.isnan(matrix[i, j]) else None
+            for j, c2 in enumerate(selected)
+        }
+        for i, c1 in enumerate(selected)
+    }
+    result["top_pairs"] = pairs[:TOP_CORR_PAIRS]
+    result["strong_pairs"] = [p for p in pairs if (p["abs_r"] or 0.0) >= 0.4]
+    if len(selected) < len(cols):
+        result["note"] = (
+            f"Computed on the top {len(selected)} usable numeric variables for stability."
+        )
+    return result
+
+
+def build_vif_analysis(frame: pd.DataFrame, cols: list[str]) -> dict:
+    selected = select_numeric_analysis_cols(frame, cols, MAX_VIF_VARS)
+    result = {
+        "variables": selected,
+        "threshold": 10.0,
+        "method": "LinearRegression on median-imputed numeric features",
+        "vif_per_feature": [],
+        "high_vif_features": [],
+        "note": None,
+    }
+    if len(selected) < 2:
+        result["note"] = "Need at least 2 usable numeric variables for VIF."
+        return result
+
+    X = frame[selected].apply(pd.to_numeric, errors="coerce")
+    X = X.fillna(X.median(numeric_only=True))
+    valid_cols = [c for c in selected if X[c].nunique(dropna=True) > 1]
+    if len(valid_cols) < 2:
+        result["note"] = "Not enough non-constant numeric variables for VIF."
+        return result
+
+    vif_rows = []
+    for col in valid_cols:
+        others = [c for c in valid_cols if c != col]
+        if not others:
+            continue
+        model = LinearRegression()
+        try:
+            model.fit(X[others], X[col])
+            r2 = safe_float(model.score(X[others], X[col]))
+            vif = None
+            if r2 is not None:
+                vif = float("inf") if r2 >= 0.999999 else safe_float(1 / max(1e-12, 1 - r2))
+            vif_rows.append({
+                "feature": col,
+                "r2_against_others": r2,
+                "vif": vif if vif != float("inf") else "infinite",
+                "status": (
+                    "severe_multicollinearity" if vif == float("inf") or (isinstance(vif, float) and vif >= 10)
+                    else "moderate" if isinstance(vif, float) and vif >= 5
+                    else "ok"
+                ),
+            })
+        except Exception as e:
+            vif_rows.append({
+                "feature": col,
+                "r2_against_others": None,
+                "vif": None,
+                "status": f"failed: {e}",
+            })
+
+    vif_rows.sort(
+        key=lambda x: float("inf") if x["vif"] == "infinite" else (x["vif"] or -1),
+        reverse=True,
+    )
+    result["vif_per_feature"] = vif_rows
+    result["high_vif_features"] = [
+        row for row in vif_rows
+        if row["vif"] == "infinite" or (isinstance(row["vif"], float) and row["vif"] >= 10)
+    ]
+    if len(valid_cols) < len(cols):
+        result["note"] = f"VIF was screened on {len(valid_cols)} usable numeric variables."
+    return result
+
+
+def discretize_for_bayes(series: pd.Series, bins: int = BAYES_BINS) -> pd.Series | None:
+    s = pd.to_numeric(series, errors="coerce")
+    s = s.replace([np.inf, -np.inf], np.nan)
+    if s.notna().sum() < BAYES_MIN_ROWS or s.nunique(dropna=True) < 3:
+        return None
+    q = min(bins, int(s.nunique(dropna=True)))
+    if q < 2:
+        return None
+    try:
+        bucketed = pd.qcut(s, q=q, duplicates="drop")
+    except Exception:
+        try:
+            bucketed = pd.cut(s, bins=q, duplicates="drop")
+        except Exception:
+            return None
+    codes = bucketed.cat.codes.replace(-1, np.nan)
+    return codes
+
+
+def bayes_local_bic(frame: pd.DataFrame, child: str, parents: list[str]) -> float:
+    cols = parents + [child]
+    sub = frame[cols].dropna()
+    n = len(sub)
+    if n == 0:
+        return float("-inf")
+    child_states = max(1, int(sub[child].nunique()))
+    ll = 0.0
+    if parents:
+        parent_groups = sub.groupby(parents, observed=True)
+        q = 0
+        for _, grp in parent_groups:
+            counts = grp[child].value_counts()
+            Nij = int(counts.sum())
+            if Nij == 0:
+                continue
+            q += 1
+            ll += float(sum(cnt * np.log(cnt / Nij) for cnt in counts if cnt > 0))
+        q = max(q, 1)
+    else:
+        counts = sub[child].value_counts()
+        ll = float(sum(cnt * np.log(cnt / n) for cnt in counts if cnt > 0))
+        q = 1
+    n_params = q * max(0, child_states - 1)
+    return ll - 0.5 * n_params * np.log(max(n, 1))
+
+
+def bayes_creates_cycle(edges: list[tuple[str, str]], src: str, dst: str) -> bool:
+    graph = {}
+    for a, b in edges + [(src, dst)]:
+        graph.setdefault(a, set()).add(b)
+    stack = [dst]
+    seen = set()
+    while stack:
+        node = stack.pop()
+        if node == src:
+            return True
+        if node in seen:
+            continue
+        seen.add(node)
+        stack.extend(graph.get(node, ()))
+    return False
+
+
+def build_bayesian_network_analysis(frame: pd.DataFrame, cols: list[str], corr_pairs: list[dict]) -> dict:
+    selected = select_numeric_analysis_cols(frame, cols, MAX_BAYES_VARS)
+    if corr_pairs:
+        ranked_cols = []
+        for pair in corr_pairs:
+            for key in ("col1", "col2"):
+                col = pair.get(key)
+                if col and col not in ranked_cols and col in selected:
+                    ranked_cols.append(col)
+        for col in selected:
+            if col not in ranked_cols:
+                ranked_cols.append(col)
+        selected = ranked_cols[:MAX_BAYES_VARS]
+
+    result = {
+        "variables": selected,
+        "discretization": f"Quantile bins (up to {BAYES_BINS} bins per variable)",
+        "score": "Greedy additive BIC on discretized numeric variables",
+        "edges": [],
+        "parent_map": {},
+        "n_complete_rows": 0,
+        "note": None,
+        "causal_warning": (
+            "Directional edges are exploratory Bayesian-network candidates, not proof of causality."
+        ),
+    }
+    if len(selected) < 3:
+        result["note"] = "Need at least 3 usable numeric variables for an exploratory Bayesian network."
+        return result
+
+    disc = {}
+    for col in selected:
+        coded = discretize_for_bayes(frame[col])
+        if coded is not None:
+            disc[col] = coded
+    if len(disc) < 3:
+        result["note"] = "Too few variables could be discretized reliably for Bayesian-network scoring."
+        return result
+
+    work = pd.DataFrame(disc).dropna()
+    result["variables"] = list(work.columns)
+    result["n_complete_rows"] = int(len(work))
+    if len(work) < BAYES_MIN_ROWS:
+        result["note"] = f"Need at least {BAYES_MIN_ROWS} complete rows for Bayesian-network scoring."
+        return result
+
+    parents = {col: [] for col in work.columns}
+    node_scores = {col: bayes_local_bic(work, col, []) for col in work.columns}
+    edges: list[tuple[str, str]] = []
+
+    while True:
+        best = None
+        best_gain = 0.0
+        for src in work.columns:
+            for dst in work.columns:
+                if src == dst or (src, dst) in edges or src in parents[dst]:
+                    continue
+                if len(parents[dst]) >= BAYES_MAX_PARENTS:
+                    continue
+                if bayes_creates_cycle(edges, src, dst):
+                    continue
+                candidate_parents = parents[dst] + [src]
+                new_score = bayes_local_bic(work, dst, candidate_parents)
+                gain = new_score - node_scores[dst]
+                if gain > best_gain:
+                    best_gain = gain
+                    best = (src, dst, new_score)
+        if not best:
+            break
+        src, dst, new_score = best
+        edges.append((src, dst))
+        parents[dst].append(src)
+        node_scores[dst] = new_score
+
+    edge_rows = []
+    for src, dst in edges:
+        mi = safe_float(mutual_info_score(work[src], work[dst]))
+        delta = safe_float(
+            bayes_local_bic(work, dst, parents[dst]) -
+            bayes_local_bic(work, dst, [p for p in parents[dst] if p != src])
+        )
+        edge_rows.append({
+            "source": src,
+            "target": dst,
+            "mutual_information": mi,
+            "bic_gain": delta,
+            "relationship": "directed_dependency_candidate",
+        })
+
+    edge_rows.sort(
+        key=lambda x: ((x["bic_gain"] or 0.0), (x["mutual_information"] or 0.0)),
+        reverse=True,
+    )
+    result["edges"] = edge_rows
+    result["parent_map"] = parents
+    if not edge_rows:
+        result["note"] = "No stable directed dependencies improved the BIC score."
+    return result
+
 # 1. Dataset overview
 log.info("-- 1. Dataset Overview --")
+target_col, target_source = resolve_target_column(df, TARGET_COL)
 col_tags     = {c: col_type_tag(df[c]) for c in df.columns}
 numeric_cols = [c for c, t in col_tags.items() if t == "numeric"]
 cat_cols     = [c for c, t in col_tags.items() if t in ("categorical", "boolean")]
@@ -154,6 +524,8 @@ overview = {
     "mixed_type_cols":  mixed_cols,
     "column_dtypes":    {c: str(df[c].dtype) for c in df.columns},
     "column_type_tags": col_tags,
+    "target_col":       target_col,
+    "target_source":    target_source,
 }
 log.info(f"Numeric: {len(numeric_cols)} | Cat: {len(cat_cols)} | "
          f"Datetime: {len(dt_cols)} | Mixed: {len(mixed_cols)}")
@@ -619,8 +991,39 @@ if len(numeric_cols) >= 2:
              f"{len(corr_data['strong_pairs'])} strong | "
              f"{len(corr_data['significant_pairs'])} significant")
 
-# 12b. Chi-square test between categorical pairs [C2]
-log.info("-- 12b. Categorical Association (Chi-Square) --")
+# 12a. Partial correlation matrix
+log.info("-- 12a. Partial Correlation --")
+
+partial_corr_analysis = build_partial_correlation_analysis(df, numeric_cols)
+log.info(
+    f"Partial correlation: {len(partial_corr_analysis.get('top_pairs', []))} pairs | "
+    f"rows={partial_corr_analysis.get('n_complete_rows', 0)}"
+)
+
+# 12b. Multicollinearity screening (VIF)
+log.info("-- 12b. VIF Screening --")
+
+vif_analysis = build_vif_analysis(df, numeric_cols)
+log.info(
+    f"VIF screening: {len(vif_analysis.get('vif_per_feature', []))} vars | "
+    f"high_vif={len(vif_analysis.get('high_vif_features', []))}"
+)
+
+# 12c. Exploratory Bayesian network candidate
+log.info("-- 12c. Bayesian Network Candidate --")
+
+bayesian_network = build_bayesian_network_analysis(
+    df,
+    numeric_cols,
+    corr_data.get("top_pairs", []),
+)
+log.info(
+    f"Bayesian network candidate: {len(bayesian_network.get('edges', []))} edges | "
+    f"rows={bayesian_network.get('n_complete_rows', 0)}"
+)
+
+# 12d. Chi-square test between categorical pairs [C2]
+log.info("-- 12d. Categorical Association (Chi-Square) --")
 
 chi_square_tests = []
 cat_cols_filtered = [c for c in cat_cols if 2 <= df[c].nunique() <= HIGH_CARD_THR]
@@ -924,6 +1327,7 @@ def build_text_report() -> str:
         f"  Dataset          : {DATA_PATH}",
         f"  Shape            : {overview['n_rows']} rows x {overview['n_cols']} cols",
         f"  Memory           : {overview['memory_mb']} MB",
+        f"  Target column    : {overview.get('target_col') or 'unknown'} ({overview.get('target_source') or 'unknown'})",
         "=" * W, "",
         "  DATA QUALITY SCORE",
         "  " + "-" * 44,
@@ -979,6 +1383,37 @@ def build_text_report() -> str:
                 f"  {p['col1']:<22} {p['col2']:<22} "
                 f"{p['pearson_r']:>8.4f} {p['strength']:<14} {sig:>5}"
             )
+        lines.append("")
+
+    if partial_corr_analysis.get("top_pairs"):
+        lines += ["  TOP PARTIAL CORRELATIONS", "  " + "-" * 44,
+                  f"  {'Col 1':<22} {'Col 2':<22} {'Partial r':>10} {'Strength':<14} {'Sig':>5}"]
+        for p in partial_corr_analysis["top_pairs"][:10]:
+            sig = "Y" if p.get("significant") else " "
+            lines.append(
+                f"  {p['col1']:<22} {p['col2']:<22} "
+                f"{p['partial_r']:>10.4f} {p['strength']:<14} {sig:>5}"
+            )
+        lines.append("")
+
+    if vif_analysis.get("vif_per_feature"):
+        lines += ["  VIF SCREENING", "  " + "-" * 44,
+                  f"  {'Feature':<24} {'VIF':>10} {'Status':<24}"]
+        for row in vif_analysis["vif_per_feature"][:12]:
+            lines.append(
+                f"  {row['feature']:<24} {str(row['vif']):>10} {row['status']:<24}"
+            )
+        lines.append("")
+
+    if bayesian_network.get("edges"):
+        lines += ["  BAYESIAN NETWORK CANDIDATE", "  " + "-" * 44,
+                  f"  {'Source':<22} {'Target':<22} {'MI':>8} {'BIC Gain':>10}"]
+        for edge in bayesian_network["edges"][:10]:
+            lines.append(
+                f"  {edge['source']:<22} {edge['target']:<22} "
+                f"{str(edge['mutual_information']):>8} {str(edge['bic_gain']):>10}"
+            )
+        lines.append("  Note: directional edges are exploratory, not causal proof.")
         lines.append("")
 
     # Chi-square top associations
@@ -1048,6 +1483,9 @@ payload = {
     "string_quality":          string_quality,
     # Visualization data
     "correlation_analysis":    corr_data,
+    "partial_correlation_analysis": partial_corr_analysis,
+    "vif_analysis":            vif_analysis,
+    "bayesian_network_analysis": bayesian_network,
     "chi_square_tests":        chi_square_tests,
     "categorical_frequencies": cat_frequencies,
     "time_series_trends":      time_trends,
@@ -1076,6 +1514,9 @@ _required_keys = [
     "anomaly_flags",
     "string_quality",
     "correlation_analysis",
+    "partial_correlation_analysis",
+    "vif_analysis",
+    "bayesian_network_analysis",
     "chi_square_tests",
     "categorical_frequencies",
     "time_series_trends",
