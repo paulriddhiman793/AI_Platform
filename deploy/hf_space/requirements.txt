@@ -18,3 +18,10 @@ tqdm
 matplotlib
 seaborn
 certifi
+pydantic-settings
+structlog
+slowapi
+prometheus-fastapi-instrumentator
+redis
+httpx
+python-dotenv

@@ -110,15 +110,25 @@ print("ENGINEERED_BASE:", os.path.splitext(os.path.basename(r"{ds}"))[0])
             rag_hits.extend(self.rag_query_transparency_output(q, top_k=3))
         seen = set()
         rag_blocks = []
+        # Keep the evidence-rich context comfortably below the provider's
+        # single-request limit.  BaseAgent also enforces a final guard, but
+        # selecting compact chunks here produces a better report than a blind
+        # request-level truncation.
+        max_context_chars = 18_000
+        context_chars = 0
         for h in sorted(rag_hits, key=lambda x: x.get("score", 0), reverse=True):
             cid = h.get("id")
             if cid in seen:
                 continue
             seen.add(cid)
-            rag_blocks.append(
-                f"[chunk:{cid} score:{h.get('score', 0):.3f}]\n{h.get('text', '')}"
-            )
-            if len(rag_blocks) >= 10:
+            text = str(h.get("text", ""))
+            remaining = max_context_chars - context_chars
+            if remaining <= 0:
+                break
+            block = f"[chunk:{cid} score:{h.get('score', 0):.3f}]\n{text[:remaining]}"
+            rag_blocks.append(block)
+            context_chars += len(block)
+            if len(rag_blocks) >= 10 or context_chars >= max_context_chars:
                 break
         context_blob = "\n\n".join(rag_blocks) if rag_blocks else self._extract_class_imbalance_block(output)
 
@@ -242,6 +252,23 @@ print("ENGINEERED_BASE:", os.path.splitext(os.path.basename(r"{ds}"))[0])
             suggestions_src = paths["suggestions_md"]
             feature_py_src = paths["feature_py"]
             base = paths["base"]
+
+            # Do not announce a successful hand-off when the Jupyter job
+            # failed before creating the engineered dataset.  The previous
+            # behaviour left a misleading "completed" workspace state after
+            # an LLM/provider failure.
+            if not fe_exec.get("success") or not engineered_src.exists():
+                await self.report(
+                    "Data Scientist feature engineering did not complete; no engineered dataset was produced. "
+                    "See data_scientist/fe_jupyter_output.txt for the captured error.",
+                    task_id,
+                )
+                await self.message(
+                    "orchestrator",
+                    "Data Scientist feature engineering failed before producing an engineered CSV.",
+                    task_id,
+                )
+                return None
 
             engineered_dst = None
             if workspace.is_initialized and engineered_src.exists():

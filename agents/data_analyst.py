@@ -73,6 +73,12 @@ class DataAnalystAgent(BaseAgent):
 
     def _find_latest_raw_dataset(self) -> Path | None:
         if not workspace.is_initialized or not workspace.project_root:
+            projects_dir = self._repo_root() / "platform_projects"
+            if projects_dir.exists():
+                candidates_dir = sorted([p for p in projects_dir.glob("chat_*") if p.is_dir()], key=lambda p: p.stat().st_mtime, reverse=True)
+                if candidates_dir:
+                    workspace.load_project(candidates_dir[0])
+        if not workspace.is_initialized or not workspace.project_root:
             return None
         ds_dir = workspace.project_root / "shared" / "datasets"
         if not ds_dir.exists():
@@ -481,121 +487,148 @@ class DataAnalystAgent(BaseAgent):
 
         miss = payload.get("missing_value_analysis", {}).get("per_column", {}) if payload else {}
         if miss:
-            cols = list(miss.keys())
-            pcts = [miss[c]["pct"] for c in cols]
-            fig = plt.figure(figsize=(8, 3.5))
-            plt.bar(cols, pcts, color="#3b82f6")
-            plt.title("Missingness (%) by Column")
-            plt.xticks(rotation=60, ha="right", fontsize=8)
-            plt.tight_layout()
-            name = "graphs/missingness.png"
-            self._write_graph_bytes(fig, name, task_id)
-            plt.close(fig)
-            saved.append(name)
+            try:
+                cols = list(miss.keys())
+                pcts = [miss[c]["pct"] for c in cols]
+                fig = plt.figure(figsize=(8, 3.5))
+                plt.bar(cols, pcts, color="#3b82f6")
+                plt.title("Missingness (%) by Column")
+                plt.xticks(rotation=60, ha="right", fontsize=8)
+                plt.tight_layout()
+                name = "graphs/missingness.png"
+                self._write_graph_bytes(fig, name, task_id)
+                plt.close(fig)
+                saved.append(name)
+            except Exception as exc:
+                print(f"[{self.AGENT_ID}] Error generating missingness graph: {exc}")
 
         if len(numeric_cols) >= 2:
-            corr = df[numeric_cols].corr(method="pearson")
-            fig = plt.figure(figsize=(6, 5))
-            plt.imshow(corr, cmap="coolwarm", vmin=-1, vmax=1)
-            plt.colorbar(fraction=0.046, pad=0.04)
-            plt.title("Pearson Correlation (Numeric)")
-            plt.xticks(range(len(numeric_cols)), numeric_cols, rotation=90, fontsize=6)
-            plt.yticks(range(len(numeric_cols)), numeric_cols, fontsize=6)
-            plt.tight_layout()
-            name = "graphs/correlation.png"
-            self._write_graph_bytes(fig, name, task_id)
-            plt.close(fig)
-            saved.append(name)
+            try:
+                corr = df[numeric_cols].apply(pd.to_numeric, errors="coerce").corr(method="pearson")
+                fig = plt.figure(figsize=(6, 5))
+                plt.imshow(corr, cmap="coolwarm", vmin=-1, vmax=1)
+                plt.colorbar(fraction=0.046, pad=0.04)
+                plt.title("Pearson Correlation (Numeric)")
+                plt.xticks(range(len(numeric_cols)), numeric_cols, rotation=90, fontsize=6)
+                plt.yticks(range(len(numeric_cols)), numeric_cols, fontsize=6)
+                plt.tight_layout()
+                name = "graphs/correlation.png"
+                self._write_graph_bytes(fig, name, task_id)
+                plt.close(fig)
+                saved.append(name)
+            except Exception as exc:
+                print(f"[{self.AGENT_ID}] Error generating correlation graph: {exc}")
 
         partial_matrix = partial_payload.get("matrix", {}) if isinstance(partial_payload, dict) else {}
         if partial_matrix:
-            cols = list(partial_matrix.keys())
-            matrix = [
-                [
-                    partial_matrix.get(c1, {}).get(c2)
-                    if partial_matrix.get(c1, {}).get(c2) is not None
-                    else float("nan")
-                    for c2 in cols
+            try:
+                cols = list(partial_matrix.keys())
+                matrix = [
+                    [
+                        partial_matrix.get(c1, {}).get(c2)
+                        if partial_matrix.get(c1, {}).get(c2) is not None
+                        else float("nan")
+                        for c2 in cols
+                    ]
+                    for c1 in cols
                 ]
-                for c1 in cols
-            ]
-            fig = plt.figure(figsize=(6, 5))
-            plt.imshow(matrix, cmap="coolwarm", vmin=-1, vmax=1)
-            plt.colorbar(fraction=0.046, pad=0.04)
-            plt.title("Partial Correlation (Controlled)")
-            plt.xticks(range(len(cols)), cols, rotation=90, fontsize=6)
-            plt.yticks(range(len(cols)), cols, fontsize=6)
-            plt.tight_layout()
-            name = "graphs/partial_correlation.png"
-            self._write_graph_bytes(fig, name, task_id)
-            plt.close(fig)
-            saved.append(name)
+                fig = plt.figure(figsize=(6, 5))
+                plt.imshow(matrix, cmap="coolwarm", vmin=-1, vmax=1)
+                plt.colorbar(fraction=0.046, pad=0.04)
+                plt.title("Partial Correlation (Controlled)")
+                plt.xticks(range(len(cols)), cols, rotation=90, fontsize=6)
+                plt.yticks(range(len(cols)), cols, fontsize=6)
+                plt.tight_layout()
+                name = "graphs/partial_correlation.png"
+                self._write_graph_bytes(fig, name, task_id)
+                plt.close(fig)
+                saved.append(name)
+            except Exception as exc:
+                print(f"[{self.AGENT_ID}] Error generating partial correlation graph: {exc}")
 
         vif_rows = vif_payload.get("vif_per_feature", []) if isinstance(vif_payload, dict) else []
         plot_vif_rows = []
         for row in vif_rows:
             vif_value = row.get("vif")
             if isinstance(vif_value, (int, float)):
-                plot_vif_rows.append({"feature": row.get("feature", ""), "vif": float(vif_value)})
+                plot_vif_rows.append({"feature": str(row.get("feature", "")), "vif": float(vif_value)})
         if plot_vif_rows:
-            fig = plt.figure(figsize=(7, max(3.5, 0.45 * len(plot_vif_rows) + 1.2)))
-            names = [row["feature"] for row in reversed(plot_vif_rows)]
-            values = [row["vif"] for row in reversed(plot_vif_rows)]
-            plt.barh(names, values, color="#ef4444")
-            plt.axvline(x=10, color="#111827", linestyle="--", linewidth=1.2, label="VIF=10 threshold")
-            plt.title("VIF Scores (Multicollinearity Check)")
-            plt.legend()
-            plt.tight_layout()
-            name = "graphs/vif_scores.png"
-            self._write_graph_bytes(fig, name, task_id)
-            plt.close(fig)
-            saved.append(name)
+            try:
+                fig = plt.figure(figsize=(7, max(3.5, 0.45 * len(plot_vif_rows) + 1.2)))
+                names = [row["feature"] for row in reversed(plot_vif_rows)]
+                values = [row["vif"] for row in reversed(plot_vif_rows)]
+                plt.barh(names, values, color="#ef4444")
+                plt.axvline(x=10, color="#111827", linestyle="--", linewidth=1.2, label="VIF=10 threshold")
+                plt.title("VIF Scores (Multicollinearity Check)")
+                plt.legend()
+                plt.tight_layout()
+                name = "graphs/vif_scores.png"
+                self._write_graph_bytes(fig, name, task_id)
+                plt.close(fig)
+                saved.append(name)
+            except Exception as exc:
+                print(f"[{self.AGENT_ID}] Error generating VIF graph: {exc}")
 
-        corr_edges = []
-        if isinstance(corr_payload, dict):
-            corr_edges = (corr_payload.get("strong_pairs") or corr_payload.get("top_pairs") or [])[:10]
-        if self._write_network_graph(
-            plt,
-            corr_edges,
-            "graphs/correlation_network.png",
-            "Correlation Network",
-            task_id,
-            directed=False,
-        ):
-            saved.append("graphs/correlation_network.png")
+        try:
+            corr_edges = []
+            if isinstance(corr_payload, dict):
+                corr_edges = (corr_payload.get("strong_pairs") or corr_payload.get("top_pairs") or [])[:10]
+            if self._write_network_graph(
+                plt,
+                corr_edges,
+                "graphs/correlation_network.png",
+                "Correlation Network",
+                task_id,
+                directed=False,
+            ):
+                saved.append("graphs/correlation_network.png")
+        except Exception as exc:
+            print(f"[{self.AGENT_ID}] Error generating correlation network: {exc}")
 
-        bayes_edges = bayes_payload.get("edges", [])[:10] if isinstance(bayes_payload, dict) else []
-        if self._write_network_graph(
-            plt,
-            bayes_edges,
-            "graphs/bayesian_network.png",
-            "Bayesian Network Candidate",
-            task_id,
-            directed=True,
-        ):
-            saved.append("graphs/bayesian_network.png")
+        try:
+            bayes_edges = bayes_payload.get("edges", [])[:10] if isinstance(bayes_payload, dict) else []
+            if self._write_network_graph(
+                plt,
+                bayes_edges,
+                "graphs/bayesian_network.png",
+                "Bayesian Network Candidate",
+                task_id,
+                directed=True,
+            ):
+                saved.append("graphs/bayesian_network.png")
+        except Exception as exc:
+            print(f"[{self.AGENT_ID}] Error generating Bayesian network: {exc}")
 
         for col in numeric_cols[:6]:
-            fig = plt.figure(figsize=(5, 3.2))
-            plt.hist(df[col].dropna(), bins=30, color="#10b981", alpha=0.85)
-            plt.title(f"Distribution: {col}")
-            plt.tight_layout()
-            name = f"graphs/hist_{col}.png"
-            self._write_graph_bytes(fig, name, task_id)
-            plt.close(fig)
-            saved.append(name)
+            try:
+                ser = pd.to_numeric(df[col], errors="coerce").dropna()
+                if len(ser) == 0:
+                    continue
+                fig = plt.figure(figsize=(5, 3.2))
+                plt.hist(ser, bins=min(30, max(5, len(ser.unique()))), color="#10b981", alpha=0.85)
+                plt.title(f"Distribution: {col}")
+                plt.tight_layout()
+                name = f"graphs/hist_{col}.png"
+                self._write_graph_bytes(fig, name, task_id)
+                plt.close(fig)
+                saved.append(name)
+            except Exception as exc:
+                print(f"[{self.AGENT_ID}] Error generating histogram for {col}: {exc}")
 
         for col in cat_cols[:4]:
-            vc = df[col].value_counts(dropna=False).head(10)
-            fig = plt.figure(figsize=(6, 3.2))
-            plt.bar(vc.index.astype(str), vc.values, color="#f59e0b")
-            plt.title(f"Top Categories: {col}")
-            plt.xticks(rotation=60, ha="right", fontsize=8)
-            plt.tight_layout()
-            name = f"graphs/cat_{col}.png"
-            self._write_graph_bytes(fig, name, task_id)
-            plt.close(fig)
-            saved.append(name)
+            try:
+                vc = df[col].astype(str).value_counts(dropna=False).head(10)
+                fig = plt.figure(figsize=(6, 3.2))
+                plt.bar([str(x)[:20] for x in vc.index], vc.values, color="#f59e0b")
+                plt.title(f"Top Categories: {col}")
+                plt.xticks(rotation=60, ha="right", fontsize=8)
+                plt.tight_layout()
+                name = f"graphs/cat_{col}.png"
+                self._write_graph_bytes(fig, name, task_id)
+                plt.close(fig)
+                saved.append(name)
+            except Exception as exc:
+                print(f"[{self.AGENT_ID}] Error generating category graph for {col}: {exc}")
 
         return saved
 

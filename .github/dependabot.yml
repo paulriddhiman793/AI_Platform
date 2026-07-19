@@ -1,0 +1,30 @@
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    reviewers:
+      - "paulriddhiman793"
+    assignees:
+      - "paulriddhiman793"
+
+  - package-ecosystem: "npm"
+    directory: "/gui"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    reviewers:
+      - "paulriddhiman793"
+    assignees:
+      - "paulriddhiman793"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5

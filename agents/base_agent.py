@@ -74,6 +74,16 @@ class BaseAgent(ABC):
                 f"[{self.AGENT_ID}] Received task from {payload.get('from', '?')}: "
                 f"{str(payload.get('content', ''))[:60]}..."
             )
+            proj_path = (payload.get("project_root") or payload.get("worker_project_path") or "").strip()
+            if proj_path and Path(proj_path).exists():
+                if not workspace.is_initialized or str(workspace.project_root) != str(Path(proj_path).resolve()):
+                    workspace.load_project(Path(proj_path))
+            elif not workspace.is_initialized or not workspace.project_root:
+                projects_dir = self._repo_root() / "platform_projects"
+                if projects_dir.exists():
+                    candidates_dir = sorted([p for p in projects_dir.glob("chat_*") if p.is_dir()], key=lambda p: p.stat().st_mtime, reverse=True)
+                    if candidates_dir:
+                        workspace.load_project(candidates_dir[0])
             result = await self.handle_task(payload)
             if result:
                 await self.report(result, task_id=payload.get("task_id"))
@@ -155,6 +165,7 @@ class BaseAgent(ABC):
                 {"role": "user", "content": user_message},
             ],
         }
+        payload = self._fit_groq_payload_to_tpm(payload)
         return await self._call_groq_with_retry(payload, api_key)
 
     async def _call_llm_with_history(self, history: list[dict], model_override: str = None) -> str:
@@ -171,6 +182,7 @@ class BaseAgent(ABC):
             "max_tokens": self._groq_max_tokens(),
             "messages": history,
         }
+        payload = self._fit_groq_payload_to_tpm(payload)
         return await self._call_groq_with_retry(payload, api_key)
 
     @classmethod
@@ -204,7 +216,10 @@ class BaseAgent(ABC):
         try:
             messages = payload.get("messages", [])
             chars = sum(len(m.get("content", "")) for m in messages)
-            in_tokens = max(1, int(chars / 4))
+            # This deliberately errs high.  The old 4-char approximation let
+            # large RAG prompts exceed Groq's request TPM limit before the
+            # rate limiter had a chance to protect the request.
+            in_tokens = max(1, int(chars / 3))
             out_tokens = int(payload.get("max_tokens") or 0)
             return max(1, in_tokens + out_tokens)
         except Exception:
@@ -234,6 +249,51 @@ class BaseAgent(ABC):
             tpd = 200000
 
         return rpm, rpd, tpm, tpd
+
+    @classmethod
+    def _fit_groq_payload_to_tpm(cls, payload: dict) -> dict:
+        """Keep one request below the configured/provider TPM limit.
+
+        RAG contexts can be much larger than the provider accepts in a single
+        request.  Truncate only when necessary and retain both the beginning
+        (instructions) and end (recent evidence) of the largest messages.
+        """
+        model = str(payload.get("model") or "")
+        _, _, tpm, _ = cls._groq_limits(model)
+        if not tpm:
+            return payload
+
+        # Leave headroom for provider tokenisation differences and request
+        # metadata; a request at the exact limit can still be rejected.
+        request_budget = max(256, tpm - 256)
+        if cls._estimate_tokens_from_payload(payload) <= request_budget:
+            return payload
+
+        messages = [dict(message) for message in payload.get("messages", [])]
+        content_chars = sum(len(str(message.get("content", ""))) for message in messages)
+        output_tokens = int(payload.get("max_tokens") or 0)
+        allowed_input_chars = max(600, (request_budget - output_tokens) * 3)
+        overflow = max(0, content_chars - allowed_input_chars)
+
+        # Reduce the largest messages first. System prompts and user requests
+        # remain intelligible because each truncation keeps a head and tail.
+        for index in sorted(range(len(messages)), key=lambda i: len(str(messages[i].get("content", ""))), reverse=True):
+            if overflow <= 0:
+                break
+            content = str(messages[index].get("content", ""))
+            if len(content) <= 800:
+                continue
+            reduction = min(overflow, len(content) - 800)
+            keep = len(content) - reduction
+            head = max(300, int(keep * 0.7))
+            tail = max(200, keep - head)
+            marker = "\n\n[Context truncated to fit the LLM request limit]\n\n"
+            messages[index]["content"] = content[:head] + marker + content[-tail:]
+            overflow -= reduction
+
+        fitted = dict(payload)
+        fitted["messages"] = messages
+        return fitted
 
     async def _apply_groq_rate_limit_locked(self, tokens: int, model: str) -> str | None:
         rpm, rpd, tpm, tpd = self._groq_limits(model)
@@ -364,6 +424,12 @@ class BaseAgent(ABC):
 
     def find_latest_uploaded_dataset(self) -> Path | None:
         if not workspace.is_initialized or not workspace.project_root:
+            projects_dir = self._repo_root() / "platform_projects"
+            if projects_dir.exists():
+                candidates_dir = sorted([p for p in projects_dir.glob("chat_*") if p.is_dir()], key=lambda p: p.stat().st_mtime, reverse=True)
+                if candidates_dir:
+                    workspace.load_project(candidates_dir[0])
+        if not workspace.is_initialized or not workspace.project_root:
             return None
         ds_dir = workspace.project_root / "shared" / "datasets"
         if not ds_dir.exists():
@@ -376,6 +442,12 @@ class BaseAgent(ABC):
         return sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True)[0]
 
     def find_latest_engineered_dataset(self) -> Path | None:
+        if not workspace.is_initialized or not workspace.project_root:
+            projects_dir = self._repo_root() / "platform_projects"
+            if projects_dir.exists():
+                candidates_dir = sorted([p for p in projects_dir.glob("chat_*") if p.is_dir()], key=lambda p: p.stat().st_mtime, reverse=True)
+                if candidates_dir:
+                    workspace.load_project(candidates_dir[0])
         if not workspace.is_initialized or not workspace.project_root:
             return None
         ds_dir = workspace.project_root / "shared" / "datasets"

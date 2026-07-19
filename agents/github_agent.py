@@ -18,6 +18,7 @@ import requests
 
 from agents.base_agent import BaseAgent
 from tools.workspace import workspace
+from api.schemas import encrypt_data, decrypt_data
 
 
 SYSTEM_PROMPT = """You are a GitHub automation agent.
@@ -275,7 +276,8 @@ class GitHubAgent(BaseAgent):
         if not cfg_path.exists():
             return {}
         try:
-            return json.loads(cfg_path.read_text(encoding="utf-8"))
+            raw = cfg_path.read_text(encoding="utf-8")
+            return json.loads(decrypt_data(raw))
         except Exception:
             return {}
 
@@ -323,22 +325,24 @@ class GitHubAgent(BaseAgent):
                         lookup = f"https://api.github.com/repos/{resolved_owner}/{repo}" if resolved_owner else None
                         if not lookup:
                             return False, "GitHub repo creation failed (422). Owner could not be resolved."
-                        get_resp = requests.get(lookup, headers=headers, timeout=30)
-                        if get_resp.status_code == 200:
-                            data = get_resp.json()
+                        info = requests.get(lookup, headers=headers, timeout=30)
+                        if info.status_code == 200:
+                            data = info.json() or {}
                             cfg["repo_url"] = data.get("clone_url") or f"https://github.com/{data.get('full_name', '')}.git"
+                            if not cfg.get("owner"):
+                                cfg["owner"] = (data.get("owner") or {}).get("login", "")
                         else:
-                            return False, f"GitHub repo creation failed (422). Also could not read repo: {get_resp.text}"
+                            return False, f"GitHub repo creation failed (422). Could not fetch existing repo info ({info.status_code})."
                     except Exception as e:
-                        return False, f"GitHub repo creation failed (422). Repo lookup failed: {e}"
+                        return False, f"GitHub repo creation failed (422): {e}"
                 else:
-                    msg = data.get("message") if isinstance(data, dict) else None
-                    return False, f"GitHub repo creation failed ({resp.status_code}). {msg or resp.text}"
+                    return False, f"GitHub repo creation failed ({resp.status_code}). {data.get('message', '')}"
+
                 try:
                     root = workspace.project_root
                     if root:
                         cfg_path = root / "shared" / "github_config.json"
-                        cfg_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+                        cfg_path.write_text(encrypt_data(json.dumps(cfg, indent=2)), encoding="utf-8")
                 except Exception:
                     pass
                 return True, None

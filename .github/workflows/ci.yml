@@ -6,35 +6,289 @@ on:
     branches:
       - main
 
+env:
+  PYTHON_VERSION: "3.11"
+  NODE_VERSION: "18"
+
 jobs:
-  backend:
+  backend-lint:
+    name: Backend Lint & Type Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ env.PYTHON_VERSION }}
           cache: "pip"
-          cache-dependency-path: deploy/hf_space/requirements.txt
-      - name: Install backend deps
+          cache-dependency-path: pyproject.toml
+      - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r deploy/hf_space/requirements.txt
-      - name: Python syntax check
-        run: python -m compileall -q .
+          pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Run ruff
+        run: ruff check .
+      - name: Run ruff format check
+        run: ruff format --check .
+      - name: Run black check
+        run: black --check .
+      - name: Run mypy
+        run: mypy .
+      - name: Run bandit security scan
+        run: bandit -r api/ agents/ tools/ -c pyproject.toml -f json -o bandit-report.json || true
+      - name: Upload bandit report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bandit-report
+          path: bandit-report.json
 
-  frontend:
+  backend-test:
+    name: Backend Tests
     runs-on: ubuntu-latest
+    services:
+      mongodb:
+        image: mongo:7
+        ports: ["27017:27017"]
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+          cache-dependency-path: pyproject.toml
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Run pytest
+        run: |
+          pytest tests/ -v --tb=short --cov=api --cov=agents --cov=tools \
+            --cov-report=xml --cov-report=term-missing --cov-fail-under=70
+      - name: Upload coverage
+        uses: codecov/codecov-action@v3
+        with:
+          files: ./coverage.xml
+          fail_ci_if_error: false
+
+  backend-security:
+    name: Backend Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install semgrep
+        run: pip install semgrep
+      - name: Run semgrep
+        run: semgrep --config=auto api/ agents/ tools/ --error --json=semgrep-results.json || true
+      - name: Upload semgrep results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: semgrep-results
+          path: semgrep-results.json
+      - name: Run trivy filesystem scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: "fs"
+          scan-ref: "."
+          format: "sarif"
+          output: "trivy-results.sarif"
+      - name: Upload trivy results
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
+      - name: Run OSV-Scanner for vulnerability checks
+        uses: google/osv-scanner-action@v1
+        with:
+          scan-args: |-
+            --format=json
+            --output=osv-scanner-results.json
+            ./
+        continue-on-error: true
+      - name: Upload OSV-Scanner results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: osv-scanner-results
+          path: osv-scanner-results.json
+      - name: Run Anchore Syft to generate SBOM (spdx.json)
+        uses: anchore/syft-action@v0.18.0
+        with:
+          output-file: sbom.spdx.json
+          output-format: spdx-json
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sbom-spdx
+          path: sbom.spdx.json
+
+  frontend-lint:
+    name: Frontend Lint & Type Check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gui
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "18"
+          node-version: ${{ env.NODE_VERSION }}
           cache: "npm"
           cache-dependency-path: gui/package-lock.json
-      - name: Install frontend deps
+      - name: Install dependencies
+        run: npm ci
+      - name: Run ESLint
+        run: npm run lint
+      - name: Run Prettier check
+        run: npm run format --check
+      - name: Run TypeScript check
+        run: npm run typecheck
+
+  frontend-test:
+    name: Frontend Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
         working-directory: gui
-        run: npm install
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+          cache-dependency-path: gui/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Run Vitest
+        run: npm run test:run -- --coverage
+      - name: Upload coverage
+        uses: codecov/codecov-action@v3
+        with:
+          files: ./coverage/lcov.info
+          fail_ci_if_error: false
+
+  frontend-build:
+    name: Frontend Build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+          cache-dependency-path: gui/package-lock.json
+      - name: Install dependencies
+        run: npm ci
       - name: Build frontend
-        working-directory: gui
         run: npm run build
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: gui/dist
+
+  docker-build:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    needs: [backend-lint, backend-test, frontend-build]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build backend image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: deploy/hf_space/Dockerfile
+          push: false
+          tags: ai-platform-backend:test
+          load: true
+      - name: Test backend image
+        run: |
+          docker run --rm -d --name test-backend -p 8000:8000 \
+            -e GROQ_API_KEY=test \
+            -e MONGO_URI=mongodb://host.docker.internal:27017 \
+            -e REDIS_URL=redis://host.docker.internal:6379 \
+            ai-platform-backend:test
+          sleep 10
+          curl -f http://localhost:8000/healthz || (docker logs test-backend && exit 1)
+          docker stop test-backend
+
+  deploy-staging:
+    name: Deploy to Staging (HF Space)
+    runs-on: ubuntu-latest
+    needs: [docker-build]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy to Hugging Face
+        uses: huggingface/huggingface-action@v1
+        with:
+          token: ${{ secrets.HF_TOKEN }}
+          repo: ${{ secrets.HF_STAGING_SPACE }}
+          path: deploy/hf_space
+
+  deploy-prod:
+    name: Deploy to Production (HF Space)
+    runs-on: ubuntu-latest
+    needs: [deploy-staging]
+    if: github.event_name == 'release' && github.event.action == 'published'
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy to Hugging Face
+        uses: huggingface/huggingface-action@v1
+        with:
+          token: ${{ secrets.HF_TOKEN }}
+          repo: ${{ secrets.HF_PROD_SPACE }}
+          path: deploy/hf_space
+
+  summary:
+    name: CI Summary
+    runs-on: ubuntu-latest
+    needs:
+      - backend-lint
+      - backend-test
+      - backend-security
+      - frontend-lint
+      - frontend-test
+      - frontend-build
+      - docker-build
+    if: always()
+    steps:
+      - name: Check job statuses
+        run: |
+          echo "## CI Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Backend Lint | ${{ needs.backend-lint.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Backend Tests | ${{ needs.backend-test.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Backend Security | ${{ needs.backend-security.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Frontend Lint | ${{ needs.frontend-lint.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Frontend Tests | ${{ needs.frontend-test.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Frontend Build | ${{ needs.frontend-build.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Docker Build | ${{ needs.docker-build.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ needs.backend-lint.result }}" != "success" ] || \
+             [ "${{ needs.backend-test.result }}" != "success" ] || \
+             [ "${{ needs.frontend-lint.result }}" != "success" ] || \
+             [ "${{ needs.frontend-test.result }}" != "success" ] || \
+             [ "${{ needs.frontend-build.result }}" != "success" ] || \
+             [ "${{ needs.docker-build.result }}" != "success" ]; then
+            echo "❌ Some jobs failed" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          else
+            echo "✅ All jobs passed" >> $GITHUB_STEP_SUMMARY
+          fi

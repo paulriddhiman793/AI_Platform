@@ -1,5 +1,6 @@
 import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
+import path from "path";
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
@@ -8,12 +9,15 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
+    resolve: {
+      alias: {
+        "@": path.resolve(__dirname, "./src"),
+      },
+    },
     server: {
+      port: 5173,
       proxy: {
-        "/ws": {
-          target: wsTarget,
-          ws: true,
-        },
+        "/ws": { target: wsTarget, ws: true },
         "/health": apiUrl,
         "/files": apiUrl,
         "/auth": apiUrl,
@@ -22,6 +26,10 @@ export default defineConfig(({ mode }) => {
         "/worker": apiUrl,
         "/file": apiUrl,
       },
+    },
+    build: {
+      outDir: "dist",
+      sourcemap: true,
     },
   };
 });

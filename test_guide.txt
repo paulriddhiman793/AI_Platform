@@ -1,0 +1,82 @@
+================================================================================
+            AI ENGINEERING PLATFORM - COMPLETE AUTOMATED TEST GUIDE
+================================================================================
+
+This document provides exact, step-by-step instructions on how to run every automated test, security check, static analysis tool, and build verification across the AI Engineering Platform repository.
+
+All commands below should be executed from the root directory of the project:
+D:\Downloads\Agents\AI_Platform
+
+--------------------------------------------------------------------------------
+1. BACKEND UNIT & SECURITY TEST SUITE (pytest)
+--------------------------------------------------------------------------------
+Our Python test suite uses `pytest` and `pytest-asyncio` to test core configuration, pub/sub event bus messaging, workspace isolation, and all security layers.
+
+[A] Run All Unit Tests (Quick Verification)
+Runs all 22 unit tests across config, message bus, workspace, and security:
+  Command: pytest tests/unit -v
+
+[B] Run Only the Security Hardening Tests
+Runs our dedicated security suite (test_security.py) verifying Fernet encryption at rest, PBKDF2 password hashing (600,000 iterations), complexity validation, strict worker command allowlists, and HTTP security headers (CSP, HSTS, X-Frame-Options):
+  Command: pytest tests/unit/test_security.py -v
+
+[C] Run Specific Unit Test Categories
+  1. Configuration & Settings:
+     Command: pytest tests/unit/test_config.py -v
+  2. Real-time Event Bus & Pub/Sub Messaging:
+     Command: pytest tests/unit/test_message_bus.py -v
+  3. Workspace File Operations & Project Isolation:
+     Command: pytest tests/unit/test_workspace.py -v
+
+[D] Run Integration & Contract Tests
+  1. End-to-end API Integration workflows:
+     Command: pytest tests/integration -v
+  2. Agent-to-Agent communication contracts:
+     Command: pytest tests/contract -v
+
+[E] Run All Tests with Code Coverage Report
+To view the exact percentage of code covered across `api/` and `agents/`:
+  Command: pytest tests/ --cov=api --cov=agents --cov-report=term-missing
+
+--------------------------------------------------------------------------------
+2. FRONTEND TYPE CHECKING & PRODUCTION BUILD (gui/)
+--------------------------------------------------------------------------------
+Our React + Vite + TypeScript frontend requires zero syntax errors, type errors, or broken imports before deployment.
+
+[A] Run TypeScript Type Check (No Emit)
+Checks all React components (`components/`), custom hooks (`hooks/`), and utilities for strict type safety:
+  Command: cd gui && npx tsc --noEmit && cd ..
+
+[B] Run Production Build & Asset Verification
+Compiles the frontend and builds optimized production assets (`dist/index.html`, CSS, and JS chunks):
+  Command: cd gui && npm run build && cd ..
+
+--------------------------------------------------------------------------------
+3. STATIC ANALYSIS & CODE QUALITY CHECKS
+--------------------------------------------------------------------------------
+
+[A] Python Fast Linting (Ruff)
+Checks Python code for formatting, best practices, and clean imports:
+  Command: ruff check .
+
+[B] Python Static Type Checking (Mypy)
+Checks type annotations across API, agent modules, and tests:
+  Command: mypy api/ agents/ tests/
+
+--------------------------------------------------------------------------------
+4. SUPPLY CHAIN & SECRETS SCANNING (pre-commit)
+--------------------------------------------------------------------------------
+Our repository is equipped with pre-commit security hooks to prevent accidental secret leakage or insecure code commits.
+
+[A] Run Pre-Commit Security Checks Across All Files
+Runs `gitleaks`, `trufflehog` secret scanners, `ruff`, `bandit` vulnerability checks, and YAML/JSON formatters against every file in the repository:
+  Command: pre-commit run --all-files
+  (If pre-commit is not in your global PATH, run: python -m pre_commit run --all-files)
+
+--------------------------------------------------------------------------------
+5. ALL-IN-ONE MASTER CHEAT-SHEET COMMAND
+--------------------------------------------------------------------------------
+To run the full verification pipeline in a single command from your terminal:
+
+  Powershell:
+    pytest tests/unit -v ; cd gui ; npm run build ; cd ..

@@ -1042,6 +1042,20 @@ n_unique  = y.nunique(dropna=True)
 task_type = "classification" if n_unique <= 20 else "regression"
 log.info(f"Task: {{task_type}}  |  Target unique values: {{n_unique}}")
 
+# Targets must be valid for the selected task.  CSV columns such as currency
+# fields are often read as mixed strings; silently passing them through makes
+# every downstream fit fail with a much less useful preprocessing error.
+if task_type == "regression":
+    y = pd.to_numeric(y, errors="coerce")
+    valid_target = y.notna() & np.isfinite(y)
+    dropped_targets = int((~valid_target).sum())
+    if dropped_targets:
+        log.warning(f"Dropping {{dropped_targets}} row(s) with non-numeric or missing regression targets.")
+        X = X.loc[valid_target].copy()
+        y = y.loc[valid_target].copy()
+    if len(y) < max(10, N_CV_FOLDS * 2):
+        raise ValueError("Too few valid numeric target values remain for regression training.")
+
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 #  FEATURE AUDIT â€” leakage detection via correlation with target
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1049,10 +1063,13 @@ num_cols_raw = X.select_dtypes(include=[np.number]).columns.tolist()
 cat_cols_raw = [c for c in X.columns if c not in num_cols_raw]
 
 for col in cat_cols_raw:
-    try:
-        X[col] = X[col].astype("string")
-    except Exception:
-        X[col] = X[col].astype(str)
+    # sklearn's categorical imputers do not reliably handle pandas.NA inside
+    # StringDtype arrays ("boolean value of NA is ambiguous").  Normalise to
+    # ordinary Python strings plus None before CV clones the preprocessors.
+    values = X[col].astype("object")
+    X[col] = values.where(pd.notna(values), None).map(
+        lambda value: None if value is None else str(value)
+    ).astype("object")
 
 leaky_features   = []
 suspect_features = []

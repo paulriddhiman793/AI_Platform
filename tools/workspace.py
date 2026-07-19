@@ -22,7 +22,10 @@ class WorkspaceManager:
     # ─── Setup ───────────────────────────────────────────────────────────────
 
     def configure(self, output_path: str) -> None:
-        path = Path(output_path)
+        # Store a canonical path.  A relative output root otherwise fails the
+        # containment check in load_project() when the project path is
+        # resolved, even though it is inside that same workspace.
+        path = Path(output_path).expanduser().resolve()
         if not path.exists():
             raise ValueError(f"Output path does not exist: {output_path}")
         self._output_path = path
@@ -92,10 +95,17 @@ class WorkspaceManager:
     def write(self, agent_id: str, filename: str, content: str,
               task_id: str = None) -> Path:
         self._check_initialized()
+        if not isinstance(content, str):
+            if isinstance(content, bytes):
+                content = content.decode("utf-8", errors="replace")
+            else:
+                content = str(content)
         file_path = self._resolve(agent_id, filename)
         file_path.parent.mkdir(parents=True, exist_ok=True)
         file_path.write_text(content, encoding="utf-8")
-        print(f"[WORKSPACE] ✍  {agent_id}/{filename} ({len(content)} chars)")
+        # Keep logging ASCII-safe: Windows consoles running cp1252 must not
+        # turn a successful file write into a UnicodeEncodeError afterwards.
+        print(f"[WORKSPACE] wrote {agent_id}/{filename} ({len(content)} chars)")
 
         # Fire event to GUI (non-blocking)
         self._fire_file_event(agent_id, filename, str(file_path), task_id)
@@ -110,10 +120,15 @@ class WorkspaceManager:
     def write_bytes(self, agent_id: str, filename: str, data: bytes,
                     task_id: str = None) -> Path:
         self._check_initialized()
+        if not isinstance(data, (bytes, bytearray)):
+            if isinstance(data, str):
+                data = data.encode("utf-8")
+            else:
+                data = str(data).encode("utf-8")
         file_path = self._resolve(agent_id, filename)
         file_path.parent.mkdir(parents=True, exist_ok=True)
         file_path.write_bytes(data)
-        print(f"[WORKSPACE] binary write {agent_id}/{filename} ({len(data)} bytes)")
+        print(f"[WORKSPACE] binary wrote {agent_id}/{filename} ({len(data)} bytes)")
         self._fire_file_event(agent_id, filename, str(file_path), task_id)
         try:
             from tools import state_store
@@ -152,7 +167,7 @@ class WorkspaceManager:
         fp = self._resolve(agent_id, filename)
         if fp.exists():
             fp.unlink()
-            print(f"[WORKSPACE] 🗑  {agent_id}/{filename}")
+            print(f"[WORKSPACE] deleted {agent_id}/{filename}")
 
     def copy_to_shared(self, from_agent: str, filename: str,
                        task_id: str = None) -> Path:

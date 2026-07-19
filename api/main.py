@@ -16,8 +16,9 @@ from pathlib import Path
 import uvicorn
 
 from tools.workspace import workspace
-from api.message_bus import publish_status
+from api.message_bus import publish_status, bus, init_message_bus, close_message_bus
 from api.server import app, start_listeners_once
+from api.config import settings
 
 from agents.orchestrator import OrchestratorAgent
 from agents.ml_engineer import MLEngineerAgent
@@ -36,11 +37,11 @@ if sys.platform.startswith("win") and hasattr(asyncio, "WindowsSelectorEventLoop
 
 
 def _display_host() -> str:
-    public_base = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
+    public_base = (settings.public_base_url or "").strip().rstrip("/")
     if public_base:
         return public_base
-    host = (os.getenv("HOST") or "0.0.0.0").strip()
-    port = int(os.getenv("PORT", "8000"))
+    host = settings.host
+    port = settings.port
     if host in ("0.0.0.0", "::"):
         host = "localhost"
     scheme = "https" if port == 443 else "http"
@@ -102,7 +103,7 @@ def _configure_github_repo_url() -> None:
     env_path = Path(".env")
     _load_env_file(env_path)
 
-    repo_url = (os.getenv("GITHUB_REPO_URL") or "").strip()
+    repo_url = (settings.github_repo_url or "").strip()
     if repo_url and _is_valid_github_repo_url(repo_url):
         print(f"  GitHub remote from env: {repo_url}")
         return
@@ -137,7 +138,7 @@ def get_startup_config() -> tuple[str, str]:
     print("=" * 60)
 
     # Platform-only storage (no user-supplied path)
-    output_path = (os.getenv("PLATFORM_STORAGE_ROOT") or "").strip()
+    output_path = settings.platform_storage_root
     if not output_path:
         output_path = str(Path(__file__).resolve().parent.parent / "platform_projects")
     Path(output_path).mkdir(parents=True, exist_ok=True)
@@ -156,7 +157,7 @@ def get_startup_config() -> tuple[str, str]:
 async def main() -> None:
     lock_path = Path(".agent_tmp") / "server.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    force_start = (os.getenv("AI_PLATFORM_FORCE_START") or "").strip().lower() in ("1", "true", "yes")
+    force_start = settings.ai_platform_force_start
     if lock_path.exists() and not force_start:
         print(f"[INIT] Server lock found at {lock_path}. Another instance may be running. Set AI_PLATFORM_FORCE_START=1 to override.")
         return
@@ -182,7 +183,7 @@ async def main() -> None:
     atexit.register(_cleanup_lock)
 
     # 1. Config (CLI init is optional; GUI can initialize the project)
-    cli_init = (os.getenv("AI_PLATFORM_CLI_INIT") or "").strip().lower() in ("1", "true", "yes")
+    cli_init = settings.ai_platform_cli_init
     if cli_init:
         output_path, project_name = get_startup_config()
         workspace.configure(output_path)
@@ -190,12 +191,15 @@ async def main() -> None:
         print(f"\nProject: {project_root}")
     else:
         # Configure platform storage root for GUI-based projects
-        output_path = (os.getenv("PLATFORM_STORAGE_ROOT") or "").strip()
+        output_path = settings.platform_storage_root
         if not output_path:
             output_path = str(Path(__file__).resolve().parent.parent / "platform_projects")
         Path(output_path).mkdir(parents=True, exist_ok=True)
         workspace.configure(output_path)
         print("\n[INIT] CLI init disabled. Waiting for GUI to initialize project.")
+
+    # 2. Initialize message bus (Redis or in-memory fallback)
+    await init_message_bus()
 
     # 3. Instantiate agents ONCE
     agents = [
@@ -215,12 +219,10 @@ async def main() -> None:
         await publish_status(agent.AGENT_ID, "idle")
 
     # 5. Start uvicorn in the background
-    port = int(os.getenv("PORT", "8000"))
-    host = (os.getenv("HOST") or "0.0.0.0").strip()
     config = uvicorn.Config(
         app=app,
-        host=host,
-        port=port,
+        host=settings.host,
+        port=settings.port,
         log_level="warning",
         # disable reload - reload spawns a second process
         reload=False,
@@ -246,6 +248,7 @@ async def main() -> None:
     try:
         await run_all()
     finally:
+        await close_message_bus()
         _cleanup_lock()
 
 

@@ -1,4 +1,4 @@
-﻿// agents.js â€” Agent definitions, scenarios, and direct response flows
+// agents.js â€” Agent definitions, scenarios, and direct response flows
 // Each step can carry a `fileWrite` field:
 //   { agent: "ml_engineer", filename: "pipeline.py", content: "..." }
 // The UI fires this to the backend which writes it to disk.
@@ -34,6 +34,13 @@ export const AGENTS = {
     role: "Pushes repo, per-agent branches, and merges to main.",
     status: "idle",
   },
+};
+
+export const TAG_STYLES = {
+  STATUS: { bg: '#0d1f0d', color: '#4ade80', border: '#1a3a1a' },
+  REPORT: { bg: '#0a1628', color: '#60a5fa', border: '#1a3060' },
+  ALERT: { bg: '#2a0808', color: '#f87171', border: '#5a1818' },
+  DONE: { bg: '#16113a', color: '#a78bfa', border: '#302060' },
 };
 
 // â”€â”€â”€ File content templates â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

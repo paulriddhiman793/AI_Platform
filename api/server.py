@@ -19,15 +19,27 @@ from datetime import datetime
 from pathlib import Path
 from typing import Set
 import time
+import contextlib
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
-from fastapi.responses import StreamingResponse, Response
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, Depends
+from fastapi.responses import StreamingResponse, Response, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
+import structlog
+
+from api.config import settings
 from api.message_bus import bus, send_to_agent
 from api.auth import authenticate, create_user, ensure_default_user, DEFAULT_EMAIL
 from tools.rag_store import build_hybrid_index_from_text
 from tools.workspace import workspace
+from api.schemas import (
+    RegisterRequest, LoginRequest, TokenRequest, WorkerExecRequest,
+    WorkerWriteFileRequest, ProjectSelectRequest, FileReadRequest,
+    PredictRequest, encrypt_data, decrypt_data
+)
 
 
 def _load_env_file(env_path: Path) -> None:
@@ -49,9 +61,29 @@ def _load_env_file(env_path: Path) -> None:
 
 _load_env_file(Path(__file__).resolve().parent.parent / ".env")
 
+# Configure structured logging
+structlog.configure(
+    processors=[
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.add_log_level,
+        structlog.processors.JSONRenderer(),
+    ],
+    wrapper_class=structlog.make_filtering_bound_logger(20),  # INFO level
+    context_class=dict,
+    logger_factory=structlog.PrintLoggerFactory(),
+    cache_logger_on_first_use=True,
+)
+logger = structlog.get_logger()
+
 app = FastAPI(title="AI Engineering Platform")
 
-origins_env = (os.getenv("FRONTEND_ORIGINS") or "").strip()
+# Rate limiter
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# CORS & Security Headers Middleware
+origins_env = (settings.frontend_origins or "").strip()
 cors_origins = [o.strip() for o in origins_env.split(",") if o.strip()]
 for local_origin in ("http://localhost:5173", "http://localhost:3000",
                      "http://127.0.0.1:5173", "http://127.0.0.1:3000"):
@@ -64,12 +96,25 @@ if not cors_origins:
         "http://127.0.0.1:5173",
         "http://127.0.0.1:3000",
     ]
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Content-Security-Policy"] = "default-src 'self' http: https: ws: wss: data: blob: 'unsafe-inline' 'unsafe-eval';"
+    return response
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Requested-With", "Accept", "Origin"],
 )
 
 # Ensure default user exists
@@ -78,60 +123,97 @@ try:
 except Exception:
     pass
 
+# Health endpoints
+@app.get("/healthz")
+@limiter.limit("100/minute")
+async def health_check(request: Request) -> JSONResponse:
+    """Liveness probe - returns 200 if server is running."""
+    return JSONResponse({"status": "ok", "service": "ai-platform-api"})
+
+
+@app.get("/readyz")
+@limiter.limit("100/minute")
+async def readiness_check(request: Request) -> JSONResponse:
+    """Readiness probe - checks dependencies (MongoDB, Redis)."""
+    checks = {"mongodb": False, "redis": False, "workspace": False}
+
+    # Check MongoDB
+    try:
+        from api.auth import _users_collection
+        _users_collection().database.client.admin.command("ping")
+        checks["mongodb"] = True
+    except Exception:
+        pass
+
+    # Check Redis (for message bus)
+    try:
+        import redis
+        r = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"))
+        r.ping()
+        checks["redis"] = True
+    except Exception:
+        pass
+
+    # Check workspace
+    checks["workspace"] = workspace.is_initialized
+
+    all_ready = all(checks.values())
+    status_code = 200 if all_ready else 503
+    return JSONResponse(
+        {"status": "ready" if all_ready else "not_ready", "checks": checks},
+        status_code=status_code,
+    )
+
 
 @app.post("/auth/register")
-async def register(payload: dict):
-    email = (payload.get("email") or "").strip().lower()
-    password = (payload.get("password") or "").strip()
-    if not email or not password:
-        raise HTTPException(status_code=400, detail="Email and password are required.")
-    ok, msg = create_user(email, password)
+@limiter.limit("5/minute")
+async def register(request: Request, payload: RegisterRequest):
+    ok, msg = create_user(payload.email, payload.password)
     if not ok:
         raise HTTPException(status_code=400, detail=msg)
     return {"status": "ok", "message": "User created."}
 
 
 @app.post("/auth/login")
-async def login(payload: dict):
-    email = (payload.get("email") or "").strip().lower()
-    password = (payload.get("password") or "").strip()
-    if not email or not password:
-        raise HTTPException(status_code=400, detail="Email and password are required.")
-    if not authenticate(email, password):
+@limiter.limit("5/minute")
+async def login(request: Request, payload: LoginRequest):
+    if not authenticate(payload.email, payload.password):
         raise HTTPException(status_code=401, detail="Invalid credentials.")
     _load_tokens()
     token = uuid.uuid4().hex
-    _active_tokens[token] = email
+    _active_tokens[token] = {"email": payload.email, "expires_at": time.time() + 86400}
     _save_tokens()
-    return {"status": "ok", "token": token, "email": email}
+    return {"status": "ok", "token": token, "email": payload.email}
 
 
 @app.post("/auth/verify")
-async def verify(payload: dict):
-    token = payload.get("auth_token")
-    email = _require_auth_token(token)
+@limiter.limit("60/minute")
+async def verify(request: Request, payload: TokenRequest):
+    email = _require_auth_token(payload.auth_token)
     return {"status": "ok", "email": email}
 
 
 @app.post("/worker/pair")
-async def worker_pair(payload: dict):
-    token = payload.get("auth_token")
-    email = _require_auth_token(token)
+@limiter.limit("20/minute")
+async def worker_pair(request: Request, payload: TokenRequest):
+    email = _require_auth_token(payload.auth_token)
     ttl_s = 900
     pair_token = _issue_pair_token(email, ttl_s=ttl_s)
     return {"status": "ok", "pair_token": pair_token, "expires_in": ttl_s}
 
 
 @app.post("/worker/status")
-async def worker_status(payload: dict):
-    token = payload.get("auth_token")
-    email = _require_auth_token(token)
+@limiter.limit("60/minute")
+async def worker_status(request: Request, payload: TokenRequest):
+    email = _require_auth_token(payload.auth_token)
     ws = _worker_sessions.get(email.lower())
     return {"status": "ok", "connected": bool(ws)}
 
 
 @app.get("/worker/download")
-async def worker_download():
+@limiter.limit("60/minute")
+async def worker_download(request: Request):
+    _require_auth_from_request(request)
     repo_root = Path(__file__).resolve().parent.parent
     worker_py = repo_root / "tools" / "local_worker.py"
     worker_req = repo_root / "tools" / "local_worker_requirements.txt"
@@ -153,19 +235,17 @@ async def worker_download():
 
 
 @app.post("/worker/exec")
-async def worker_exec(payload: dict):
-    token = payload.get("auth_token")
-    email = _require_auth_token(token).lower()
-    command = (payload.get("command") or "").strip()
-    cwd = (payload.get("cwd") or "").strip()
-    detach = bool(payload.get("detach"))
+@limiter.limit("20/minute")
+async def worker_exec(request: Request, payload: WorkerExecRequest):
+    email = _require_auth_token(payload.auth_token).lower()
+    command = payload.command
+    cwd = (payload.cwd or "").strip()
+    detach = payload.detach
     if cwd:
         cwd = os.path.abspath(cwd)
         if not os.path.isdir(cwd):
             raise HTTPException(status_code=400, detail="cwd must be an existing directory.")
-    timeout_s = payload.get("timeout_s") or 300
-    if not command:
-        raise HTTPException(status_code=400, detail="command required.")
+    timeout_s = payload.timeout_s
     ws = _worker_sessions.get(email)
     if not ws:
         raise HTTPException(status_code=409, detail="Local worker not connected.")
@@ -189,21 +269,28 @@ async def worker_exec(payload: dict):
 
 
 @app.post("/worker/write_file")
-async def worker_write_file(payload: dict):
-    token = payload.get("auth_token")
-    email = _require_auth_token(token).lower()
-    rel_path = (payload.get("path") or "").strip()
-    content_b64 = (payload.get("content_b64") or "").strip()
-    cwd = (payload.get("cwd") or "").strip()
-    timeout_s = payload.get("timeout_s") or 120
+@limiter.limit("20/minute")
+async def worker_write_file(request: Request, payload: WorkerWriteFileRequest):
+    email = _require_auth_token(payload.auth_token).lower()
+    rel_path = payload.path
+    content_b64 = payload.content_b64
+    cwd = (payload.cwd or "").strip()
+    timeout_s = payload.timeout_s
+    try:
+        raw_bytes = base64.b64decode(content_b64, validate=True)
+        if len(raw_bytes) > 10_000_000:
+            raise HTTPException(status_code=413, detail="File size exceeds 10MB limit.")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid base64 content.")
+    ext = Path(rel_path).suffix.lower()
+    if ext in {".exe", ".dll", ".so", ".sh", ".bat", ".cmd", ".msi"}:
+        raise HTTPException(status_code=403, detail="Executable file extensions not allowed.")
     if cwd:
         cwd = os.path.abspath(cwd)
         if not os.path.isdir(cwd):
             raise HTTPException(status_code=400, detail="cwd must be an existing directory.")
-    if not rel_path:
-        raise HTTPException(status_code=400, detail="path required.")
-    if not content_b64:
-        raise HTTPException(status_code=400, detail="content_b64 required.")
     ws = _worker_sessions.get(email)
     if not ws:
         raise HTTPException(status_code=409, detail="Local worker not connected.")
@@ -237,14 +324,27 @@ async def open_project(payload: dict):
     return {"status": "ok", "path": str(path)}
 
 
-def _safe_rel_path(rel: str) -> Path:
-    rel = (rel or "").strip().lstrip("/").lstrip("\\")
-    if not rel or ".." in rel.replace("\\", "/").split("/"):
+def _safe_rel_path(rel: str, base: Path = None) -> Path:
+    raw_rel = (rel or "").strip()
+    if not raw_rel:
         raise HTTPException(status_code=400, detail="Invalid path.")
-    base = workspace.project_root
+    if not base:
+        base = workspace.project_root
     if not base:
         raise HTTPException(status_code=400, detail="Project not initialized.")
-    full = (base / rel).resolve()
+    base = base.resolve()
+    try:
+        candidate = Path(raw_rel)
+        if candidate.is_absolute() or ":" in raw_rel[:3]:
+            full = candidate.resolve()
+            if base in full.parents or full == base:
+                return full
+    except Exception:
+        pass
+    cleaned = raw_rel.lstrip("/").lstrip("\\")
+    if ".." in cleaned.replace("\\", "/").split("/"):
+        raise HTTPException(status_code=400, detail="Invalid path.")
+    full = (base / cleaned).resolve()
     if base not in full.parents and full != base:
         raise HTTPException(status_code=400, detail="Path outside project.")
     return full
@@ -254,10 +354,9 @@ def _safe_rel_path(rel: str) -> Path:
 async def list_files(payload: dict):
     token = payload.get("auth_token")
     email = _require_auth_token(token)
-    if not workspace.is_initialized or not workspace.project_root:
-        raise HTTPException(status_code=400, detail="Project not initialized.")
-    _assert_project_owner(email)
-    base = workspace.project_root
+    base = _resolve_authorized_project(payload, email)
+    if not workspace.is_initialized or str(workspace.project_root.resolve()) != str(base):
+        workspace.load_project(base)
     files = []
     for rel in workspace.list_files():
         full = (base / rel)
@@ -274,14 +373,15 @@ async def list_files(payload: dict):
 
 
 @app.post("/file")
+@app.post("/file/read")
 async def read_file(payload: dict):
     token = payload.get("auth_token")
     rel = payload.get("path")
     email = _require_auth_token(token)
-    if not workspace.is_initialized or not workspace.project_root:
-        raise HTTPException(status_code=400, detail="Project not initialized.")
-    _assert_project_owner(email)
-    full = _safe_rel_path(rel)
+    base = _resolve_authorized_project(payload, email)
+    if not workspace.is_initialized or str(workspace.project_root.resolve()) != str(base):
+        workspace.load_project(base)
+    full = _safe_rel_path(rel, base)
     if not full.exists() or not full.is_file():
         raise HTTPException(status_code=404, detail="File not found.")
     data = full.read_bytes()
@@ -306,7 +406,9 @@ async def read_file(payload: dict):
             "status": "ok",
             "path": str(rel),
             "binary": True,
+            "is_binary": True,
             "mime": mime,
+            "content": b64,
             "content_b64": b64,
             "truncated": truncated,
         }
@@ -315,7 +417,9 @@ async def read_file(payload: dict):
             "status": "ok",
             "path": str(rel),
             "binary": True,
+            "is_binary": True,
             "mime": "application/octet-stream",
+            "content": None,
             "content_b64": None,
             "truncated": truncated,
         }
@@ -324,9 +428,27 @@ async def read_file(payload: dict):
         "status": "ok",
         "path": str(rel),
         "binary": False,
+        "is_binary": False,
         "content": text,
         "truncated": truncated,
     }
+
+
+@app.get("/api/workspace/files/{agent_id}/{filename:path}")
+@app.get("/workspace/files/{agent_id}/{filename:path}")
+async def get_workspace_file(agent_id: str, filename: str, request: Request):
+    proj_root_str = request.query_params.get("project_root", "").strip()
+    base = None
+    if proj_root_str and Path(proj_root_str).exists():
+        base = Path(proj_root_str).resolve()
+    elif workspace.is_initialized and workspace.project_root:
+        base = workspace.project_root.resolve()
+    if not base:
+        raise HTTPException(status_code=400, detail="Project not initialized.")
+    target = base / agent_id / filename
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found.")
+    return FileResponse(target)
 
 
 @app.post("/project_zip")
@@ -402,15 +524,32 @@ async def list_projects(payload: dict):
     return {"status": "ok", "projects": projects}
 
 
+def _assign_project_owner(project_root: Path, email: str) -> None:
+    try:
+        (project_root / ".owner").write_text(email.lower(), encoding="utf-8")
+        info_path = project_root / ".project_info"
+        if info_path.exists():
+            info_text = info_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            if not any(line.lower().startswith("owner:") for line in info_text):
+                info_text.append(f"Owner: {email.lower()}")
+                info_path.write_text("\n".join(info_text) + "\n", encoding="utf-8")
+    except Exception:
+        pass
+
+
 @app.post("/projects/select")
 async def select_project(payload: dict):
     token = payload.get("auth_token")
     email = _require_auth_token(token)
-    project_id = (payload.get("project_id") or "").strip()
+    project_id = (payload.get("project_id") or payload.get("project_root") or payload.get("root") or "").strip()
     if not project_id:
         raise HTTPException(status_code=400, detail="project_id required.")
-    base = _ensure_platform_root()
-    project_root = (base / project_id).resolve()
+    base = _ensure_platform_root().resolve()
+    candidate = Path(project_id)
+    if not candidate.is_absolute():
+        project_root = (base / project_id).resolve()
+    else:
+        project_root = candidate.resolve()
     if not project_root.exists():
         raise HTTPException(status_code=404, detail="Project not found.")
     owner = _get_project_owner(project_root)
@@ -424,6 +563,65 @@ async def select_project(payload: dict):
     settings = _read_project_settings(project_root)
     return {
         "status": "ok",
+        "project_name": workspace.project_name,
+        "project_root": str(workspace.project_root),
+        "name": workspace.project_name,
+        "root": str(workspace.project_root),
+        "target_col": _normalize_target_col(settings.get("target_col")),
+    }
+
+
+@app.post("/projects/open")
+async def open_or_create_project(payload: dict):
+    global _active_project_owner
+    token = payload.get("auth_token")
+    email = _require_auth_token(token)
+    name = (payload.get("name") or "").strip()
+    root_raw = (payload.get("root") or payload.get("project_root") or payload.get("project_id") or "").strip()
+    if not name and not root_raw:
+        raise HTTPException(status_code=400, detail="Project name or root required.")
+
+    base = _ensure_platform_root().resolve()
+    target_root = None
+
+    if root_raw:
+        candidate = Path(root_raw)
+        if not candidate.is_absolute():
+            candidate = (base / root_raw).resolve()
+        else:
+            candidate = candidate.resolve()
+        if candidate.exists() and candidate.is_dir():
+            target_root = candidate
+
+    if target_root:
+        owner = _get_project_owner(target_root)
+        if not owner:
+            owner = _maybe_claim_legacy_project(target_root, email)
+        if owner and owner != email.lower():
+            raise HTTPException(status_code=403, detail="Forbidden: project owned by another user.")
+        workspace.load_project(target_root)
+        _active_project_owner = email.lower()
+        settings = _read_project_settings(target_root)
+        return {
+            "status": "ok",
+            "name": workspace.project_name,
+            "root": str(workspace.project_root),
+            "project_name": workspace.project_name,
+            "project_root": str(workspace.project_root),
+            "target_col": _normalize_target_col(settings.get("target_col")),
+        }
+
+    if not name:
+        name = Path(root_raw).name if root_raw else "New Project"
+    workspace.new_project(name)
+    new_root = workspace.project_root
+    _assign_project_owner(new_root, email)
+    _active_project_owner = email.lower()
+    settings = _read_project_settings(new_root)
+    return {
+        "status": "ok",
+        "name": workspace.project_name,
+        "root": str(workspace.project_root),
         "project_name": workspace.project_name,
         "project_root": str(workspace.project_root),
         "target_col": _normalize_target_col(settings.get("target_col")),
@@ -467,9 +665,10 @@ def _load_tokens() -> None:
         _tokens_loaded = True
         return
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        raw = path.read_text(encoding="utf-8")
+        data = json.loads(decrypt_data(raw))
         if isinstance(data, dict):
-            _active_tokens.update({str(k): str(v) for k, v in data.items()})
+            _active_tokens.update(data)
     except Exception:
         pass
     _tokens_loaded = True
@@ -479,7 +678,7 @@ def _save_tokens() -> None:
     try:
         path = _tokens_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(_active_tokens, indent=2), encoding="utf-8")
+        path.write_text(encrypt_data(json.dumps(_active_tokens, indent=2)), encoding="utf-8")
     except Exception:
         pass
 
@@ -537,7 +736,7 @@ def _safe_dataset_name(name: str) -> str:
 
 def _normalize_target_col(value: str | None) -> str | None:
     text = (value or "").strip()
-    if not text:
+    if not text or "@" in text:
         return None
     return text[:200]
 
@@ -567,17 +766,35 @@ def _write_project_settings(project_root: Path, settings: dict) -> dict:
 
 
 def _require_auth(msg: dict) -> str:
-    return _require_auth_token(msg.get("auth_token"))
+    payload = msg.get("payload", {}) if isinstance(msg.get("payload"), dict) else {}
+    token = msg.get("auth_token") or payload.get("auth_token")
+    return _require_auth_token(token)
 
 
 def _require_auth_token(token: str) -> str:
     token = (token or "").strip()
     if not _tokens_loaded:
         _load_tokens()
-    email = _active_tokens.get(token)
-    if not token or not email:
+    entry = _active_tokens.get(token)
+    if not token or not entry:
         raise HTTPException(status_code=401, detail="Unauthorized")
-    return email
+    if isinstance(entry, dict):
+        if time.time() > entry.get("expires_at", 0):
+            _active_tokens.pop(token, None)
+            _save_tokens()
+            raise HTTPException(status_code=401, detail="Token expired. Please log in again.")
+        return entry.get("email", "")
+    return str(entry)
+
+
+def _require_auth_from_request(request: Request) -> str:
+    auth_header = request.headers.get("Authorization", "")
+    token = ""
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:].strip()
+    if not token:
+        token = request.query_params.get("auth_token", "").strip()
+    return _require_auth_token(token)
 
 
 def _get_project_owner(project_root: Path) -> str | None:
@@ -656,24 +873,29 @@ def _resolve_authorized_project(payload: dict, email: str) -> Path:
 
 def _run_transparency_for_dataset_sync(dataset_path: Path, output_path: Path) -> None:
     code = (
-        "import pandas as pd\n"
+        "import sys, pandas as pd\n"
         "from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor\n"
         "from model_transparency import run_pipeline_from_df, infer_target_column\n"
-        f"df = pd.read_csv(r'''{str(dataset_path)}''')\n"
+        "dataset_path = sys.argv[1]\n"
+        "df = pd.read_csv(dataset_path)\n"
         "target_col, _, _, _ = infer_target_column(df, verbose=False)\n"
         "y = df[target_col]\n"
         "task_type = 'classification' if y.nunique(dropna=True) <= 20 else 'regression'\n"
         "model = RandomForestClassifier(n_estimators=100, random_state=42) if task_type == 'classification' else RandomForestRegressor(n_estimators=120, random_state=42)\n"
-        "print('DATASET_PATH:', r'''%s''')\n" % str(dataset_path).replace("\\", "\\\\")
-        + "print('DATASET_SHAPE:', df.shape)\n"
+        "print('DATASET_PATH:', dataset_path)\n"
+        "print('DATASET_SHAPE:', df.shape)\n"
         "print('TARGET_COL:', target_col)\n"
         "print('TASK_TYPE:', task_type)\n"
-        "run_pipeline_from_df(model=model, df=df, target_col=target_col, task_type=task_type, test_size=0.2, scale=(task_type=='regression'), cv=3, n_walkthrough=2)\n"
+        # This is a fast, background inspection report.  Keep the selected
+        # RandomForest rather than auto-swapping to a 500-iteration CatBoost
+        # run for wide/high-cardinality CSVs; detailed model training is the
+        # ML Engineer agent's responsibility.
+        "run_pipeline_from_df(model=model, df=df, target_col=target_col, task_type=task_type, test_size=0.2, scale=(task_type=='regression'), cv=3, n_walkthrough=2, disable_catboost_swap=True)\n"
     )
     env = dict(**os.environ)
     env["PYTHONIOENCODING"] = "utf-8"
     proc = subprocess.run(
-        [sys.executable, "-c", code],
+        [sys.executable, "-c", code, str(dataset_path)],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -778,20 +1000,106 @@ async def _phase3_check_background(project_root: Path, task_id: str | None) -> N
         })
 
 
-async def _process_dataset_background(dataset_path: Path) -> None:
+async def _process_dataset_background(dataset_path: Path, filename: str = "dataset.csv", task_id: str | None = None) -> None:
     if not workspace.is_initialized or not workspace.project_root:
         return
+    print(f"[SERVER] ⏳ Agents analyzing dataset: {dataset_path} ...")
     shared_dir = workspace.project_root / "shared"
     out_path = shared_dir / "output.txt"
     rag_dir = shared_dir / "rag"
 
+    await broadcast_to_gui({"type": "status", "payload": {"agent_id": "data_analyst", "status": "BUSY"}})
+    await broadcast_to_gui({"type": "status", "payload": {"agent_id": "orchestrator", "status": "BUSY"}})
+    await broadcast_to_gui({"type": "status", "payload": {"agent_id": "ml_engineer", "status": "BUSY"}})
+
+    target_col = ""
+    conf = 0.0
+    reason = "No target inferred"
+    shape_str = "unknown shape"
+    columns_list = []
+
+    try:
+        def _inspect_and_infer():
+            import pandas as pd
+            from model_transparency import infer_target_column
+            if dataset_path.suffix.lower() in {".xlsx", ".xls"}:
+                df = pd.read_excel(dataset_path)
+            elif dataset_path.suffix.lower() == ".parquet":
+                df = pd.read_parquet(dataset_path)
+            elif dataset_path.suffix.lower() == ".json":
+                df = pd.read_json(dataset_path)
+            elif dataset_path.suffix.lower() == ".tsv":
+                df = pd.read_csv(dataset_path, sep="\t")
+            else:
+                df = pd.read_csv(dataset_path)
+            t_col, t_conf, t_reason, _ = infer_target_column(df, verbose=False)
+            return t_col, t_conf, t_reason, df.shape, list(df.columns)
+
+        target_col, conf, reason, shape, columns_list = await asyncio.to_thread(_inspect_and_infer)
+        shape_str = f"{shape[0]} rows × {shape[1]} columns"
+        conf_display = f"{conf:.0%}" if isinstance(conf, (int, float)) else str(conf)
+        print(f"[SERVER] 🎯 Auto-detected Target Column: '{target_col}' (confidence: {conf_display}, reason: {reason})")
+    except Exception as e:
+        conf_display = str(conf) if conf else "N/A"
+        print(f"[SERVER] ⚠️ Target column inference warning: {e}")
+
     try:
         await asyncio.to_thread(_run_transparency_for_dataset_sync, dataset_path, out_path)
-        text = out_path.read_text(encoding="utf-8", errors="replace")
-        await asyncio.to_thread(build_hybrid_index_from_text, text, rag_dir)
-    except Exception:
-        # Silent by design for GUI; backend logs only.
-        pass
+        if out_path.exists():
+            text = out_path.read_text(encoding="utf-8", errors="replace")
+            await asyncio.to_thread(build_hybrid_index_from_text, text, rag_dir)
+            print(f"[SERVER] 📚 Built hybrid RAG index for dataset transparency summary.")
+    except Exception as e:
+        print(f"[SERVER] ⚠️ RAG index build warning: {e}")
+
+    if target_col:
+        try:
+            settings = _read_project_settings(workspace.project_root)
+            settings["target_col"] = target_col
+            _write_project_settings(workspace.project_root, settings)
+            print(f"[SERVER] 💾 Saved target column '{target_col}' to project settings.")
+            await broadcast_to_gui({
+                "type": "project_settings",
+                "from": "server",
+                "to": "gui",
+                "content": "project_settings_updated",
+                "target_col": target_col,
+                "payload": {"target_col": target_col},
+            })
+        except Exception as e:
+            print(f"[SERVER] ⚠️ Could not save project settings: {e}")
+
+    await broadcast_to_gui({"type": "status", "payload": {"agent_id": "data_analyst", "status": "IDLE"}})
+    await broadcast_to_gui({"type": "status", "payload": {"agent_id": "orchestrator", "status": "IDLE"}})
+    await broadcast_to_gui({"type": "status", "payload": {"agent_id": "ml_engineer", "status": "IDLE"}})
+
+    cols_preview = ", ".join([f"`{c}`" for c in columns_list[:10]])
+    if len(columns_list) > 10:
+        cols_preview += f" (+{len(columns_list) - 10} more)"
+    if not 'conf_display' in locals():
+        conf_display = f"{conf:.0%}" if isinstance(conf, (int, float)) else str(conf)
+    summary_msg = (
+        f"📊 **Dataset Readiness & Inspection Complete**\n"
+        f"- **File**: `{filename}`\n"
+        f"- **Path**: `{dataset_path}`\n"
+        f"- **Shape**: {shape_str}\n"
+        f"- **Features ({len(columns_list)})**: {cols_preview or 'N/A'}\n"
+        f"- **Assigned Target Column**: `{target_col or 'None'}` *(confidence: {conf_display})*\n"
+        f"- **Selection Rationale**: {reason}\n\n"
+        f"✅ *All agents (`Orchestrator`, `Data Analyst`, `ML Engineer`) indexed the dataset and are ready for tasks!*"
+    )
+    await broadcast_to_gui({
+        "type": "message",
+        "from": "data_analyst",
+        "to": "orchestrator",
+        "payload": {
+            "chat_id": "team",
+            "from": "data_analyst",
+            "content": summary_msg,
+            "tag": "STATUS",
+        }
+    })
+    print(f"[SERVER] ✨ Dataset background processing complete for {filename}.")
 
 
 # ─── Broadcast to all GUI clients ─────────────────────────────────────────────
@@ -817,6 +1125,19 @@ async def broadcast_to_gui(message: dict) -> None:
 
 
 # ─── Bus listeners (each runs exactly once) ───────────────────────────────────
+
+def _detect_tag(content: str) -> str | None:
+    if not content:
+        return None
+    u = content.upper()
+    if any(k in u for k in ["ERROR", "FAIL", "EXCEPTION"]):
+        return "ALERT"
+    if any(k in u for k in ["SUCCESS", "SAVED", "COMPLETE", "COMPLETED", "DONE"]):
+        return "SUCCESS"
+    if any(k in u for k in ["REPORT", "FINDING", "SUGGESTION", "ANALYSIS"]):
+        return "REPORT"
+    return None
+
 
 async def _listen_orchestrator_inbox() -> None:
     q = bus.subscribe("orchestrator.inbox")
@@ -873,16 +1194,39 @@ async def _listen_file_events() -> None:
         envelope = await q.get()
         p = envelope["payload"]
         await broadcast_to_gui({
+            "type":    "file_log",
+            "from":    p.get("agent_id"),
+            "to":      "gui",
+            "content": p.get("content", ""),
+            "tag":     "STATUS",
+            "task_id": p.get("task_id"),
+            "agent_id":  p.get("agent_id"),
+            "filename":  p.get("filename"),
+            "full_path": p.get("path"),
+            "path":      p.get("path"),
+            "extra": {
+                "agent_id":  p.get("agent_id"),
+                "filename":  p.get("filename"),
+                "full_path": p.get("path"),
+                "path":      p.get("path"),
+            },
+        })
+        await broadcast_to_gui({
             "type":    "file_written",
             "from":    p.get("agent_id"),
             "to":      "gui",
             "content": p.get("content", ""),
             "tag":     "STATUS",
             "task_id": p.get("task_id"),
+            "agent_id":  p.get("agent_id"),
+            "filename":  p.get("filename"),
+            "full_path": p.get("path"),
+            "path":      p.get("path"),
             "extra": {
                 "agent_id":  p.get("agent_id"),
                 "filename":  p.get("filename"),
                 "full_path": p.get("path"),
+                "path":      p.get("path"),
             },
         })
 
@@ -970,6 +1314,21 @@ async def websocket_endpoint(websocket: WebSocket):
                         "files": files,
                     },
                 }))
+                for f in files:
+                    await websocket.send_text(json.dumps({
+                        "type":      "file_log",
+                        "from":      f["agent_id"],
+                        "to":        "gui",
+                        "content":   f"File: {f['filename']}",
+                        "tag":       "STATUS",
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "task_id":   None,
+                        "agent_id":  f["agent_id"],
+                        "filename":  f["filename"],
+                        "full_path": f["full_path"],
+                        "path":      f["full_path"],
+                        "extra":     f,
+                    }))
         except Exception:
             pass
 
@@ -1186,10 +1545,11 @@ async def websocket_endpoint(websocket: WebSocket):
                         "task_id": msg.get("task_id"),
                     })
                     continue
-                agent_id     = msg.get("agent_id", "shared")
-                filename     = msg.get("filename", "output.txt")
-                file_content = msg.get("content", "")
-                from_agent   = msg.get("from", agent_id)
+                payload = msg.get("payload", {}) if isinstance(msg.get("payload"), dict) else {}
+                agent_id     = msg.get("agent_id") or payload.get("agent_id") or "shared"
+                filename     = msg.get("filename") or payload.get("filename") or "output.txt"
+                file_content = msg.get("content") if msg.get("content") is not None else payload.get("content", "")
+                from_agent   = msg.get("from") or payload.get("from") or agent_id
                 if workspace.is_initialized:
                     try:
                         written_path = workspace.write(agent_id, filename, file_content)
@@ -1210,7 +1570,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         print(f"[SERVER] File write error: {e}")
                 continue
 
-            # â”€â”€ Dataset upload from GUI (base64 over WebSocket) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # ── Dataset upload from GUI (base64 over WebSocket) ───────────────
             if msg_type == "dataset_upload":
                 try:
                     _require_auth(msg)
@@ -1220,17 +1580,25 @@ async def websocket_endpoint(websocket: WebSocket):
                     _ensure_platform_root()
                     workspace.new_project(f"chat_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}")
 
-                filename = _safe_dataset_name(msg.get("filename", "dataset.csv"))
-                payload_b64 = msg.get("content_b64", "")
-                task_id = msg.get("task_id") or str(uuid.uuid4())[:8]
+                payload = msg.get("payload", {}) if isinstance(msg.get("payload"), dict) else {}
+                filename = _safe_dataset_name(msg.get("filename") or payload.get("filename") or "dataset.csv")
+                payload_b64 = msg.get("content_b64") or payload.get("content_b64") or ""
+                task_id = msg.get("task_id") or payload.get("task_id") or str(uuid.uuid4())[:8]
+                print(f"[SERVER] 📂 Receiving dataset upload: '{filename}' (Task ID: {task_id})")
 
                 try:
                     blob = base64.b64decode(payload_b64, validate=True)
+                    if len(blob) > 100_000_000:
+                        raise ValueError("Dataset exceeds 100MB size limit.")
+                    ext = Path(filename).suffix.lower()
+                    if ext not in {".csv", ".tsv", ".json", ".parquet", ".xlsx"}:
+                        raise ValueError("Unsupported dataset format.")
                     datasets_dir = workspace.project_root / "shared" / "datasets"
                     datasets_dir.mkdir(parents=True, exist_ok=True)
                     dataset_path = datasets_dir / filename
                     dataset_path.write_bytes(blob)
-                    asyncio.create_task(_process_dataset_background(dataset_path))
+                    print(f"[SERVER] ✅ Dataset successfully written to: {dataset_path} ({len(blob)} bytes)")
+
                     await broadcast_to_gui({
                         "type": "dataset_uploaded",
                         "from": "server",
@@ -1238,13 +1606,21 @@ async def websocket_endpoint(websocket: WebSocket):
                         "content": "dataset_uploaded",
                         "tag": "STATUS",
                         "task_id": task_id,
+                        "filename": filename,
+                        "path": str(dataset_path),
+                        "payload": {
+                            "filename": filename,
+                            "path": str(dataset_path),
+                        },
                         "extra": {
                             "filename": filename,
                             "path": str(dataset_path),
                         },
                     })
-                except Exception:
-                    pass
+                    print(f"[SERVER] 🚀 Launching background inspection and agent analysis for {filename}...")
+                    asyncio.create_task(_process_dataset_background(dataset_path, filename, task_id))
+                except Exception as e:
+                    print(f"[SERVER] ❌ Error processing dataset upload: {e}")
                 continue
 
             # ── User message → orchestrator ────────────────────────────────
@@ -1255,9 +1631,14 @@ async def websocket_endpoint(websocket: WebSocket):
                     _assert_project_owner(email)
                 except HTTPException:
                     continue
+                payload = msg.get("payload", {}) if isinstance(msg.get("payload"), dict) else {}
+                proj_path = (msg.get("project_root") or payload.get("project_root") or msg.get("worker_project_path") or payload.get("worker_project_path") or "").strip()
+                if proj_path and Path(proj_path).exists():
+                    if not workspace.is_initialized or str(workspace.project_root) != str(Path(proj_path).resolve()):
+                        workspace.load_project(Path(proj_path))
                 if not workspace.is_initialized or not workspace.project_root:
                     continue
-                target_col = _normalize_target_col(msg.get("target_col"))
+                target_col = _normalize_target_col(msg.get("target_col") or payload.get("target_col"))
                 try:
                     settings = _read_project_settings(workspace.project_root)
                     if target_col:
@@ -1282,9 +1663,10 @@ async def websocket_endpoint(websocket: WebSocket):
                     pass
                 continue
 
-            content = msg.get("content", "").strip()
-            to      = msg.get("to", "team")
-            task_id = msg.get("task_id") or str(uuid.uuid4())[:8]
+            payload = msg.get("payload", {}) if isinstance(msg.get("payload"), dict) else {}
+            content = (msg.get("content") or payload.get("content") or "").strip()
+            to      = msg.get("to") or payload.get("chat_id") or payload.get("to") or "team"
+            task_id = msg.get("task_id") or payload.get("task_id") or str(uuid.uuid4())[:8]
 
             if not content:
                 continue
@@ -1303,15 +1685,22 @@ async def websocket_endpoint(websocket: WebSocket):
                 })
                 continue
 
+            # Ensure workspace is loaded if project_root/worker_project_path is passed
+            proj_path = (msg.get("project_root") or payload.get("project_root") or msg.get("worker_project_path") or payload.get("worker_project_path") or "").strip()
+            if proj_path and Path(proj_path).exists():
+                if not workspace.is_initialized or str(workspace.project_root) != str(Path(proj_path).resolve()):
+                    workspace.load_project(Path(proj_path))
+
             # Guard against accidental duplicate sends from multiple GUI WS connections.
-            target_col = _normalize_target_col(msg.get("target_col"))
+            target_col = _normalize_target_col(msg.get("target_col") or payload.get("target_col"))
+            auth_token = msg.get("auth_token") or payload.get("auth_token")
+            worker_project_path = proj_path or (str(workspace.project_root) if workspace.is_initialized else "")
             dedup_key = (to, content, target_col or "")
             now_ts = time.time()
             last_ts = _recent_user_messages.get(dedup_key, 0.0)
             if now_ts - last_ts < 1.2:
                 continue
             _recent_user_messages[dedup_key] = now_ts
-
             target = "orchestrator" if to == "team" else to
             await send_to_agent(
                 from_agent="user",
@@ -1319,12 +1708,14 @@ async def websocket_endpoint(websocket: WebSocket):
                 content=content,
                 task_id=task_id,
                 extra={
-                    "auth_token": msg.get("auth_token"),
+                    "auth_token": auth_token,
                     "user_email": email,
-                    "worker_project_path": msg.get("worker_project_path") or "",
+                    "worker_project_path": worker_project_path,
+                    "project_root": worker_project_path,
                     "target_col": target_col,
                 },
             )
+
 
     except WebSocketDisconnect:
         connected_clients.discard(websocket)
@@ -1380,7 +1771,7 @@ async def worker_endpoint(websocket: WebSocket):
                         "from": "ml_engineer",
                         "to": "team",
                         "content": content,
-                        "tag": "STATUS",
+                        "tag": _detect_tag(content),
                         "task_id": None,
                     })
     except WebSocketDisconnect:
@@ -1400,94 +1791,6 @@ async def worker_endpoint(websocket: WebSocket):
                     "stderr": "Local worker disconnected.",
                 })
 
-# ─── REST ─────────────────────────────────────────────────────────────────────
-
-@app.get("/health")
-async def health():
-    return {
-        "status":       "ok",
-        "project":      workspace.project_name,
-        "project_root": str(workspace.project_root) if workspace.project_root else None,
-        "clients":      len(connected_clients),
-        "listeners":    _listeners_started,
-    }
-
-
-@app.get("/files")
-async def list_files():
-    if not workspace.is_initialized:
-        return {"files": []}
-    return {"files": workspace.list_files(), "root": str(workspace.project_root)}
-
-
-@app.post("/predict")
-async def predict(features: dict):
-    """
-    Live prediction endpoint — loads the model written by ML Engineer.
-    Returns real prediction if model exists, mock response otherwise.
-    """
-    import json
-    from pathlib import Path
-
-    # Try to load the real model from workspace
-    if workspace.is_initialized:
-        model_candidates = [
-            workspace.project_root / "ml_engineer" / "model" / "model.joblib",
-            workspace.project_root / "shared"      / "model.joblib",
-        ]
-        for model_path in model_candidates:
-            if model_path.exists():
-                try:
-                    import joblib, pandas as pd
-                    model = joblib.load(model_path)
-                    df    = pd.DataFrame([features])
-                    return {
-                        "prediction":  bool(model.predict(df)[0]),
-                        "probability": round(float(model.predict_proba(df)[0][1]), 4),
-                        "source":      "real_model",
-                        "model_path":  str(model_path),
-                    }
-                except Exception as e:
-                    pass  # Fall through to mock
-
-    # Mock response when model isn't trained yet
-    age      = features.get("account_age", 24)
-    duration = features.get("session_duration", 5.2)
-    prob     = round(min(0.95, max(0.05, (age * 0.02 + duration * 0.05))), 4)
-    return {
-        "prediction":  prob > 0.5,
-        "probability": prob,
-        "source":      "mock",
-        "note":        "Model not yet trained — run the pipeline first",
-    }
-
-
-@app.get("/metrics")
-async def metrics():
-    """Model performance metrics — reads from workspace if available."""
-    if workspace.is_initialized:
-        # Try to read actual metrics logged by ML Engineer
-        try:
-            metrics_path = workspace.project_root / "shared" / "metrics.json"
-            if metrics_path.exists():
-                import json
-                return json.loads(metrics_path.read_text())
-        except Exception:
-            pass
-    return {
-        "accuracy":         94.1,
-        "f1":               0.89,
-        "auc":              0.96,
-        "drift_score":      0.03,
-        "latency_p95":      118,
-        "inference_volume": 8420,
-        "source":           "mock",
-    }
-
-
-# ─── Helper ───────────────────────────────────────────────────────────────────
-
-def _detect_tag(content: str) -> str:
     c = content.lower()
     if any(k in c for k in ["✅", "complete", "done", "deployed", "approved", "passed", "ci passed"]):
         return "DONE"

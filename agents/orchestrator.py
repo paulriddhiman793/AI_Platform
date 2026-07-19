@@ -146,6 +146,7 @@ class OrchestratorAgent(BaseAgent):
             extra["auth_token"] = task.get("auth_token")
         if task.get("worker_project_path"):
             extra["worker_project_path"] = task.get("worker_project_path")
+            extra["project_root"] = task.get("worker_project_path")
         if task.get("target_col"):
             extra["target_col"] = task.get("target_col")
 
@@ -242,7 +243,7 @@ class OrchestratorAgent(BaseAgent):
                 "Training-process request received. Assigning: ML Engineer.",
                 task_id,
             )
-            extra = {"worker_project_path": worker_project_path}
+            extra = {"worker_project_path": worker_project_path, "project_root": worker_project_path}
             if auth_token:
                 extra["auth_token"] = auth_token
             if target_col:
@@ -262,7 +263,7 @@ class OrchestratorAgent(BaseAgent):
                     "target_col": target_col,
                 }
             await self.report("Local deploy request received. Assigning: ML Engineer.", task_id)
-            extra = {"worker_project_path": worker_project_path}
+            extra = {"worker_project_path": worker_project_path, "project_root": worker_project_path}
             if auth_token:
                 extra["auth_token"] = auth_token
             if target_col:
@@ -305,7 +306,7 @@ class OrchestratorAgent(BaseAgent):
 
         agent_names = ", ".join(a.replace("_", " ").title() for a in agents)
         await self.report(f"Task received. Assigning: {agent_names}.", task_id)
-        extra = {"worker_project_path": worker_project_path}
+        extra = {"worker_project_path": worker_project_path, "project_root": worker_project_path}
         if auth_token:
             extra["auth_token"] = auth_token
         if target_col:

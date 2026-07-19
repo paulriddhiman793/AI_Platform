@@ -1,0 +1,181 @@
+[project]
+name = "ai-platform"
+version = "0.1.0"
+description = "Multi-agent ML engineering platform"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.109.0",
+    "uvicorn[standard]>=0.27.0",
+    "python-multipart>=0.0.6",
+    "requests>=2.31.0",
+    "pymongo>=4.6.0",
+    "numpy>=1.26.0",
+    "pandas>=2.1.0",
+    "scikit-learn>=1.3.0",
+    "scipy>=1.11.0",
+    "joblib>=1.3.0",
+    "lightgbm>=4.3.0",
+    "xgboost>=2.0.0",
+    "catboost>=1.2.0",
+    "optuna>=3.6.0",
+    "category-encoders>=2.6.0",
+    "lancedb>=0.8.0",
+    "tqdm>=4.66.0",
+    "matplotlib>=3.8.0",
+    "seaborn>=0.13.0",
+    "certifi>=2023.11.0",
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",
+    "python-dotenv>=1.0.0",
+    "structlog>=24.1.0",
+    "slowapi>=0.1.9",
+    "redis>=5.0.0",
+    "httpx>=0.26.0",
+    "cryptography>=41.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.1.0",
+    "black>=23.12.0",
+    "mypy>=1.8.0",
+    "pre-commit>=3.6.0",
+    "bandit>=1.7.0",
+    "semgrep>=1.50.0",
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["api*", "agents*", "tools*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["."]
+exclude = [
+    ".git",
+    "__pycache__",
+    ".agent_tmp",
+    "platform_projects",
+    "catboost_info",
+    "deploy/hf_space",
+    "gui",
+    "node_modules",
+    ".venv",
+    "venv",
+]
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "I",
+    "UP",
+    "B",
+    "C4",
+    "SIM",
+    "ARG",
+    "PTH",
+    "T20",
+    "ERA",
+    "PL",
+    "TRY",
+]
+ignore = [
+    "S101",
+    "TRY003",
+    "PTH118",
+    "B008",
+    "T201",
+]
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]
+"tools/phase3_checks.py" = ["S101", "T201"]
+"tools/phase3_contracts.py" = ["S101"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  \.git
+  | \.agent_tmp
+  | platform_projects
+  | catboost_info
+  | deploy/hf_space
+  | gui
+  | node_modules
+  | \.venv
+  | venv
+)/
+'''
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = true
+no_implicit_optional = true
+strict_optional = true
+ignore_missing_imports = true
+exclude = [
+    "deploy/hf_space",
+    "gui",
+    ".agent_tmp",
+    "platform_projects",
+    "catboost_info",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short --strict-markers"
+markers = [
+    "unit: Unit tests",
+    "integration: Integration tests",
+    "contract: Contract tests",
+    "slow: Slow tests",
+]
+
+[tool.coverage.run]
+source = ["api", "agents", "tools"]
+omit = [
+    "*/tests/*",
+    "*/__pycache__/*",
+    "*/.agent_tmp/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]
+precision = 2
+
+[tool.bandit]
+exclude_dirs = [
+    "tests",
+    "deploy/hf_space",
+    "gui",
+    ".agent_tmp",
+    "platform_projects",
+    "catboost_info",
+]
+skips = ["B101", "B601"]
